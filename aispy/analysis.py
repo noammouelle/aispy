@@ -27,7 +27,17 @@ def get_params_dict(file_path):
         'cloud_params': {},
         'potential_params': {},
         'sequence_params': {},
-        'pulse_params': {},
+        'pulse_params': {
+            'rabi_freq': [],
+            'wtype': [],
+            'phi0': [],
+            'kx':[],
+            'ky':[],
+            'kz':[],
+            'omega':[],
+            't0':[],
+            't1':[]
+        },
         'simulation_params': {}
     }
 
@@ -35,7 +45,6 @@ def get_params_dict(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
 
-    # Parse each line based on keywords
     for line in lines:
         line = line.strip()
         
@@ -69,12 +78,38 @@ def get_params_dict(file_path):
 
         # Pulse parameters
         elif line.startswith("rabifreq"):
-            param_dict['pulse_params']['rabi_freq'] = 2 * pi * mpf(line.split()[1])
+            # Convert each frequency to 2 * pi * mpf and add to the list
+            param_dict['pulse_params']['rabi_freq'].extend(
+                [2 * pi * mpf(freq) for freq in line.split()[1:]]
+            )
+        
         elif line.startswith("wtype"):
-            param_dict['pulse_params']['wtype'] = line.split()[1]
+            # Append each wtype as a string to the list
+            param_dict['pulse_params']['wtype'].extend(line.split()[1:])
+        
         elif line.startswith("phi0"):
-            param_dict['pulse_params']['phi0'] = float(line.split()[1])
+            # Append each phi0 value as a float to the list
+            param_dict['pulse_params']['phi0'].extend([float(phi) for phi in line.split()[1:]])
+        
         elif line.startswith("kx"):
-            param_dict['pulse_params']['kx_psr'] = int(line.split()[3])
+            # Append each kx value
+            param_dict['pulse_params']['kx'].extend([float(k) for k in line.split()[1:]])
+
+        elif line.startswith("ky"):
+            # Append each kx value
+            param_dict['pulse_params']['ky'].extend([float(k) for k in line.split()[1:]])
+
+        elif line.startswith("kz"):
+            # Append each kx value
+            param_dict['pulse_params']['kz'].extend([float(k) for k in line.split()[1:]])
+
+        elif line.startswith("t0"):
+            param_dict['pulse_params']['t0'].extend([mpf(t) for t in line.split()[1:]])
+        
+        elif line.startswith("t1"):
+            param_dict['pulse_params']['t1'].extend([mpf(t) for t in line.split()[1:]])
+
+        elif line.startswith("omega"):
+            param_dict['pulse_params']['omega'].extend([mpf(o) for o in line.split()[1:]])
 
     return param_dict
