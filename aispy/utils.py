@@ -151,6 +151,11 @@ class AISFlow():
             start_times.append(t2 + t_start_shifted[i])
             end_times.append(t2 + t_end_shifted[i])
 
+        # LMT block 4
+        for i in range(nlmt):
+            start_times.append(t3 + t_start_shifted[i])
+            end_times.append(t2 + t_end_shifted[i])
+
         # final pi/2 pulse
         start_times.append(t3)
         end_times.append(t3 + dt_bs)
