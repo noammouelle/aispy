@@ -7,16 +7,28 @@ from mpmath import mp, mpf
 from math import pi
 
 def load_data(filename):
-    with h5py.File(filename,"r") as file:
-        states = file["states"][:]
-        positions = file["positions"][:]
-        velocities = file["velocities"][:]
-        phase_shifts = file["phaseShifts"][:]
-        interference_flag = file["interferingFlag"][:]
+    if "_PROB.h5" in filename:
+        with h5py.File(filename,"r") as file:
+            states = file["states"][:]
+            positions = file["positions"][:]
+            velocities = file["velocities"][:]
+            probabilities = file["probabilities"][:]
+            interference_flag = file["interferingFlag"][:]
 
-    df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
-                       "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
-                       "phase_shifts":phase_shifts, "interference_flag":interference_flag})
+        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
+                        "probabilities":probabilities, "interference_flag":interference_flag})
+    else:
+        with h5py.File(filename,"r") as file:
+            states = file["states"][:]
+            positions = file["positions"][:]
+            velocities = file["velocities"][:]
+            phase_shifts = file["phaseShifts"][:]
+            interference_flag = file["interferingFlag"][:]
+
+        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
+                        "phase_shifts":phase_shifts, "interference_flag":interference_flag})
     return df
 
 def get_params_dict(file_path):
