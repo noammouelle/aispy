@@ -10,6 +10,7 @@ g = mp.mpf('9.81')
 R = mp.mpf('6.37e6')
 m = mp.mpf('1.44e-25')
 h = mp.mpf('6.62607015e-34')
+kB = 1.381e-23
 pi = mp.pi
 hbar = h / (2 * pi)
 rabi_freq = 2 * pi * mp.mpf('1e6')
@@ -77,8 +78,9 @@ class AISFlow():
 
     def _write_simulation_params(self):
         self.aisi_file.write('# Simulation parameters\n')
-        self.aisi_file.write('amplitudethreshold {} \n'.format(self.simulation_params['amplitudethreshold']))
-        self.aisi_file.write('\n')
+        self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
+        self.aisi_file.write('coherencelength {}'.format(self.simulation_params['coherencelength']))
+        self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
         self.aisi_file.write('# Sequence parameters\n')
