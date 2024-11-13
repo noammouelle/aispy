@@ -7,17 +7,57 @@ from mpmath import mp, mpf
 from math import pi
 
 def load_data(filename):
-    with h5py.File(filename,"r") as file:
-        states = file["states"][:]
-        positions = file["positions"][:]
-        velocities = file["velocities"][:]
-        phase_shifts = file["phaseShifts"][:]
-        interference_flag = file["interferingFlag"][:]
+    if "_PROB.h5" in filename:
+        with h5py.File(filename,"r") as file:
+            states = file["states"][:]
+            positions = file["positions"][:]
+            velocities = file["velocities"][:]
+            probabilities = file["probabilities"][:]
+            interference_flag = file["interferingFlag"][:]
 
-    df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
-                       "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
-                       "phase_shifts":phase_shifts, "interference_flag":interference_flag})
+        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
+                        "probabilities":probabilities, "interference_flag":interference_flag})
+    else:
+        with h5py.File(filename,"r") as file:
+            states = file["states"][:]
+            positions = file["positions"][:]
+            velocities = file["velocities"][:]
+            phase_shifts = file["phaseShifts"][:]
+            interference_flag = file["interferingFlag"][:]
+
+        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
+                        "phase_shifts":phase_shifts, "interference_flag":interference_flag})
     return df
+
+def concat_datasets(filepaths, output_filepath):
+    # Empty list to collect DataFrames
+    data_frames = []
+    
+    # Load each file, append DataFrame to the list
+    for filepath in filepaths:
+        df = load_data(filepath)
+        data_frames.append(df)
+    
+    # Concatenate all DataFrames
+    concatenated_df = pd.concat(data_frames, ignore_index=True)
+    
+    # Save concatenated data to a new HDF5 file in the same format
+    with h5py.File(output_filepath, "w") as h5f:
+        # Check if the data includes "probabilities" or "phase_shifts" column to set dataset structure
+        if "probabilities" in concatenated_df.columns:
+            h5f.create_dataset("states", data=concatenated_df["states"].values)
+            h5f.create_dataset("positions", data=concatenated_df[["x", "y", "z"]].values)
+            h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
+            h5f.create_dataset("probabilities", data=concatenated_df["probabilities"].values)
+            h5f.create_dataset("interferingFlag", data=concatenated_df["interference_flag"].values)
+        else:
+            h5f.create_dataset("states", data=concatenated_df["states"].values)
+            h5f.create_dataset("positions", data=concatenated_df[["x", "y", "z"]].values)
+            h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
+            h5f.create_dataset("phaseShifts", data=concatenated_df["phase_shifts"].values)
+            h5f.create_dataset("interferingFlag", data=concatenated_df["interference_flag"].values)
 
 def get_params_dict(file_path):
     """
@@ -38,7 +78,8 @@ def get_params_dict(file_path):
             't0':[],
             't1':[]
         },
-        'simulation_params': {}
+        'simulation_params': {},
+        'io_params': {}
     }
 
     # Open and read the file
@@ -71,6 +112,12 @@ def get_params_dict(file_path):
         # Simulation parameters
         elif line.startswith("amplitudethreshold"):
             param_dict['simulation_params']['amplitudethreshold'] = float(line.split()[1])
+        elif line.startswith("coherencelength"):
+            param_dict['simulation_params']['coherencelength'] = float(line.split()[1])
+        
+        # IO params
+        elif line.startswith("printprobs"):
+            param_dict['io_params']['printprobs'] = float(line.split()[1])
 
         # Sequence parameters
         elif line.startswith("detectiontime"):

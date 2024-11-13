@@ -10,6 +10,7 @@ g = mp.mpf('9.81')
 R = mp.mpf('6.37e6')
 m = mp.mpf('1.44e-25')
 h = mp.mpf('6.62607015e-34')
+kB = 1.381e-23
 pi = mp.pi
 hbar = h / (2 * pi)
 rabi_freq = 2 * pi * mp.mpf('1e6')
@@ -30,6 +31,7 @@ class AISFlow():
         self.sequence_params = param_dict['sequence_params']
         self.pulse_params = param_dict['pulse_params']
         self.simulation_params = param_dict['simulation_params']
+        self.io_params = param_dict['io_params']
 
         # open the aisi file
         self.aisi_file = open(workdir+'/'+flowdir+'.aisi', 'w')
@@ -43,6 +45,8 @@ class AISFlow():
         self._write_simulation_params()
         # write the sequence parameters
         self._write_sequence_params()
+        # write IO parameters
+        self._write_io_params()
         # write the pulse parameters
         self._write_pulse_params()
 
@@ -74,12 +78,17 @@ class AISFlow():
 
     def _write_simulation_params(self):
         self.aisi_file.write('# Simulation parameters\n')
-        self.aisi_file.write('amplitudethreshold {} \n'.format(self.simulation_params['amplitudethreshold']))
-        self.aisi_file.write('\n')
+        self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
+        self.aisi_file.write('coherencelength {}'.format(self.simulation_params['coherencelength']))
+        self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
         self.aisi_file.write('# Sequence parameters\n')
         self.aisi_file.write('detectiontime {}\n\n'.format(self.sequence_params['detectiontime']))
+
+    def _write_io_params(self):
+        self.aisi_file.write('# IO parameters\n')
+        self.aisi_file.write('printprobs {}\n\n'.format(self.io_params['printprobs']))
         
     def _write_pulse_params(self):
         v0 = self.cloud_params['v0'][2] # z component of velocity
