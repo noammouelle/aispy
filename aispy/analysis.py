@@ -114,6 +114,8 @@ def get_params_dict(file_path):
             param_dict['simulation_params']['amplitudethreshold'] = float(line.split()[1])
         elif line.startswith("coherencelength"):
             param_dict['simulation_params']['coherencelength'] = float(line.split()[1])
+        elif line.startswith("usemcbranching"):
+            param_dict['simulation_params']['usemcbranching'] = int(line.split()[1])
         
         # IO params
         elif line.startswith("printprobs"):

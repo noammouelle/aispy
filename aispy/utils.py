@@ -79,7 +79,8 @@ class AISFlow():
     def _write_simulation_params(self):
         self.aisi_file.write('# Simulation parameters\n')
         self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
-        self.aisi_file.write('coherencelength {}'.format(self.simulation_params['coherencelength']))
+        self.aisi_file.write('coherencelength {}\n'.format(self.simulation_params['coherencelength']))
+        self.aisi_file.write('usemcbranching {}'.format(self.simulation_params['usemcbranching']))
         self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
