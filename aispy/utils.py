@@ -18,10 +18,24 @@ rabi_freq = 2 * pi * mp.mpf('1e6')
 omega0 = 2 * pi * mp.mpf("429228004229873.0")
 kz     = omega0 / c
 
-def v(t,v0):
+def v_uniform(t,v0):
     return v0 - g*t
+
+def v(t,v0,z0):
+    return -1/2 * (R - 2*z0) * sqrt(2*g/R) * sinh(sqrt(2*g/R) * t) + v0 * cosh(sqrt(2*g/R) * t)
+
 def detuning(v):
-    return omega0 / (1 - v/c)
+    omega = omega0 / (1 - v/c)
+    k = omega / c
+    recoil = hbar * k **2 /(2*m)
+
+    return omega + recoil
+
+def detuning(v):
+    b = v/c - 1
+    a = hbar / (2*m*c)
+    c = omega0
+    return (-b + sqrt(b**2 - 4*a*c)) / (2*a)
 
 class AISFlow():
     def __init__(self, param_dict, flowdir, workdir):
@@ -93,6 +107,7 @@ class AISFlow():
         
     def _write_pulse_params(self):
         v0 = self.cloud_params['v0'][2] # z component of velocity
+        z0 = self.cloud_params['x0'][2]
         t_init = self.sequence_params['t_init']
         lmt_order = self.sequence_params['lmt_order']
         dt_lmt = self.sequence_params['dt_lmt']
@@ -182,7 +197,7 @@ class AISFlow():
         # compute the velocities relative to the laser source
         v_rel = []
         for i in range(3+4*nlmt):
-            v_rel.append(sign[i]*v(start_times[i],v0))
+            v_rel.append(sign[i]*v(start_times[i],v0,z0))
 
         # compute the detuned frequencies and wavevectors
         detuned_freq = []
