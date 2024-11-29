@@ -31,12 +31,6 @@ def detuning(v):
 
     return omega + recoil
 
-def detuning(v):
-    b = v/c - 1
-    a = hbar / (2*m*c)
-    c = omega0
-    return (-b + sqrt(b**2 - 4*a*c)) / (2*a)
-
 class AISFlow():
     def __init__(self, param_dict, flowdir, workdir):
         self.param_dict = param_dict
