@@ -88,7 +88,9 @@ class AISFlow():
         self.aisi_file.write('# Simulation parameters\n')
         self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
         self.aisi_file.write('coherencelength {}\n'.format(self.simulation_params['coherencelength']))
-        self.aisi_file.write('usemcbranching {}'.format(self.simulation_params['usemcbranching']))
+        self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
+        self.aisi_file.write('ignoredetuning {}\n'.format(self.simulation_params['ignoredetuning']))
+        self.aisi_file.write('seed {}\n'.format(self.simulation_params['seed']))
         self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
@@ -97,7 +99,8 @@ class AISFlow():
 
     def _write_io_params(self):
         self.aisi_file.write('# IO parameters\n')
-        self.aisi_file.write('printprobs {}\n\n'.format(self.io_params['printprobs']))
+        self.aisi_file.write('printprobs {}\n'.format(self.io_params['printprobs']))
+        self.aisi_file.write('printwavepackets {}\n\n'.format(self.io_params['printwavepackets']))
         
     def _write_pulse_params(self):
         v0 = self.cloud_params['v0'][2] # z component of velocity
