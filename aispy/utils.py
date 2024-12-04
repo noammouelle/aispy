@@ -194,7 +194,10 @@ class AISFlow():
         # compute the velocities relative to the laser source
         v_rel = []
         for i in range(3+4*nlmt):
-            v_rel.append(sign[i]*v(start_times[i],v0,z0))
+            if self.sequence_params['automaticdetuning'] == 0:
+                v_rel.append(0)
+            else:
+                v_rel.append(sign[i]*v(start_times[i],v0,z0))
 
         # compute the detuned frequencies and wavevectors
         detuned_freq = []
