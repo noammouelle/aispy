@@ -74,6 +74,7 @@ class AISFlow():
     def _write_cloud_params(self):
         self.aisi_file.write('# Cloud parameters\n')
         self.aisi_file.write('natoms {}\n'.format(self.cloud_params['natoms']))
+        self.aisi_file.write('initialstate {}\n'.format(self.cloud_params['initialstate']))
         self.aisi_file.write('sigma {}\n'.format(self.cloud_params['sigma']))
         self.aisi_file.write('temp {}\n'.format(self.cloud_params['temp']))
         self.aisi_file.write('x0 {} {} {}\n'.format(self.cloud_params['x0'][0], self.cloud_params['x0'][1], self.cloud_params['x0'][2]))
