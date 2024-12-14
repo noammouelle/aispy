@@ -92,6 +92,10 @@ class AISFlow():
         self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
         self.aisi_file.write('ignoredetuning {}\n'.format(self.simulation_params['ignoredetuning']))
         self.aisi_file.write('seed {}\n'.format(self.simulation_params['seed']))
+        self.aisi_file.write('usedetvolselection {}\n'.format(self.simulation_params['usedetvolselection']))
+        self.aisi_file.write('xdet {} {}\n'.format(self.simulation_params['xdet'][0], self.simulation_params['xdet'][1]))
+        self.aisi_file.write('ydet {} {}\n'.format(self.simulation_params['ydet'][0], self.simulation_params['ydet'][1]))
+        self.aisi_file.write('zdet {} {}'.format(self.simulation_params['zdet'][0], self.simulation_params['zdet'][1]))
         self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
