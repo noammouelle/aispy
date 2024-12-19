@@ -26,10 +26,7 @@ def v(t,v0,z0):
 
 def detuning(v):
     omega = omega0 / (1 - v/c)
-    k = omega / c
-    recoil = hbar * k **2 /(2*m)
-
-    return omega + recoil
+    return omega
 
 class AISFlow():
     def __init__(self, param_dict, flowdir, workdir):
@@ -106,8 +103,186 @@ class AISFlow():
         self.aisi_file.write('# IO parameters\n')
         self.aisi_file.write('printprobs {}\n'.format(self.io_params['printprobs']))
         self.aisi_file.write('printwavepackets {}\n\n'.format(self.io_params['printwavepackets']))
-        
+
     def _write_pulse_params(self):
+        if self.sequence_params['automaticdetuning'] == 1:
+            self._write_auto_stepwise_detuning()
+        else:
+            if (self.sequence_params['frequencychirp'] != 0) or (self.sequence_params['kchirp'] != 0):
+                self._write_chirped_sequence()
+            else:
+                raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
+        
+    def _write_chirped_sequence(self):
+        # get the initial vertical velocity
+        v0 = self.cloud_params['v0'][2]
+        # get the v0-detuned frequency and wavevector
+        omega0_detuned = detuning(v0)
+        kz_detuned = omega0_detuned / c
+        # compute the absolute values of the frequency chirp and the k-vector chirp
+        omega_chirp = self.sequence_params['frequencychirp'] * kz * g
+        k_chirp = self.sequence_params['kchirp'] * kz * g / c
+
+        # compute times etc as before
+        z0 = self.cloud_params['x0'][2]
+        t_init = self.sequence_params['t_init']
+        lmt_order = self.sequence_params['lmt_order']
+        dt_lmt = self.sequence_params['dt_lmt']
+        T = self.sequence_params['interrogation_time']
+        rabi_freq = self.pulse_params['rabi_freq']
+        wtype = self.pulse_params['wtype']
+        phi0 = self.pulse_params['phi0']
+        kx_psr = self.pulse_params['kx_psr']
+
+        if lmt_order == 1:
+            assert(dt_lmt == 0)
+        else:
+            assert(dt_lmt > 0)
+        
+        dt1 =dt_lmt
+        dt2 = dt_lmt
+        dt3 = dt_lmt
+        dt4 = dt_lmt
+
+        assert(lmt_order%2 == 1)
+        nlmt = int((lmt_order-1)/2)
+
+        # calculate the time sequence
+        dt_bs = pi/(2*rabi_freq)
+        dt_pi = pi/(rabi_freq)
+
+        lmt_pulse_index = np.arange(0, nlmt+1)
+        t_start_shifted = lmt_pulse_index * (dt_pi + dt_lmt)
+        t_end_shifted   = t_start_shifted + dt_pi
+        if nlmt > 1:
+            t_tot           = t_end_shifted[-1]
+        else:
+            t_tot = mp.mpf('0')
+        
+        t_bs1 = t_init
+        t0 = dt_bs + t_init + dt1
+        t1 = t0 + t_tot + T
+        t_pi = t1 + t_tot + dt2
+        t2 = t_pi + dt_pi + dt3
+        t3 = t2 + t_tot + T
+        t_bs2 = t3 + t_tot + dt4
+
+        start_times = []
+        end_times = []
+
+        # initial pi/2 pulse
+        start_times.append(t_bs1)
+        end_times.append(t_bs1 + dt_bs)
+
+        # LMT block 1
+        for i in range(nlmt):
+            start_times.append(t0 + t_start_shifted[i])
+            end_times.append(t0 + t_end_shifted[i])
+
+        # LMT block 2
+        for i in range(nlmt):
+            start_times.append(t1 + t_start_shifted[i])
+            end_times.append(t1 + t_end_shifted[i])
+        
+        # pi pulse
+        start_times.append(t_pi)
+        end_times.append(t_pi + dt_pi)
+
+        # LMT block 3
+        for i in range(nlmt):
+            start_times.append(t2 + t_start_shifted[i])
+            end_times.append(t2 + t_end_shifted[i])
+
+        # LMT block 4
+        for i in range(nlmt):
+            start_times.append(t3 + t_start_shifted[i])
+            end_times.append(t3 + t_end_shifted[i])
+
+        # final pi/2 pulse
+        start_times.append(t_bs2)
+        end_times.append(t_bs2 + dt_bs)
+
+        # compute the direction of the pulses
+        sign = []
+        for i in range(0,nlmt+1):
+            sign.append((-1)**i)
+        for i in range(0,2*nlmt+1):
+            sign.append((-1)**(nlmt+i))
+        for i in range(0,nlmt+1):
+            sign.append((-1)**(3*nlmt+i))
+
+        kx = np.zeros(3+4*nlmt)
+        ky = np.zeros(3+4*nlmt)
+        kx[-1] = kx_psr #psr
+
+        # write the start times
+        self.aisi_file.write("# Pulse parameters\n")
+        self.aisi_file.write("t0 ")
+        for t_ in start_times:
+            self.aisi_file.write(str(t_) + " ")
+        self.aisi_file.write("\n")
+        # write the end times
+        self.aisi_file.write("t1 ")
+        for t_ in end_times:
+            self.aisi_file.write(str(t_) + " ")
+        self.aisi_file.write("\n")
+        # write the kx values
+        self.aisi_file.write("kx ")
+        for kx_ in kx:
+            self.aisi_file.write(str(kx_) + " ")
+        self.aisi_file.write("\n")
+        # write the ky values
+        self.aisi_file.write("ky ")
+        for ky_ in ky:
+            self.aisi_file.write(str(ky_) + " ")
+        self.aisi_file.write("\n")
+        # write the kz values
+        self.aisi_file.write("kz ")
+        for kz_ in range(3+4*nlmt):
+            self.aisi_file.write(str(kz_detuned) + " ")
+        self.aisi_file.write("\n")
+        # write the detuned frequencies
+        self.aisi_file.write("omega ")
+        for freq_ in range(3+4*nlmt):
+            self.aisi_file.write(str(omega0_detuned) + " ")
+        self.aisi_file.write("\n")
+        # write the rabi frequency
+        self.aisi_file.write("rabifreq ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(rabi_freq/(2*pi)) + " ")
+        self.aisi_file.write("\n")
+        # write wavefront type
+        self.aisi_file.write("wtype ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(wtype + " ")
+        self.aisi_file.write("\n")
+        # write phi0
+        self.aisi_file.write("phi0 ")
+        for i in range(3+4*nlmt):
+            if i == 3+4*nlmt-1:
+                self.aisi_file.write(str(phi0) + "\n")
+            else:
+                self.aisi_file.write("0 ")
+        # write the kchirp and frequency chirp (0 for this case)
+        self.aisi_file.write("kxchirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("kychirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("kzchirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(-sign[i]*k_chirp) + " ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("frequencychirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(-sign[i]*omega_chirp) + " ")
+        self.aisi_file.write("\n")
+        
+
+    def _write_auto_stepwise_detuning(self):
         v0 = self.cloud_params['v0'][2] # z component of velocity
         z0 = self.cloud_params['x0'][2]
         t_init = self.sequence_params['t_init']
@@ -263,6 +438,23 @@ class AISFlow():
                 self.aisi_file.write(str(phi0) + "\n")
             else:
                 self.aisi_file.write("0 ")
+        # write the kchirp and frequency chirp (0 for this case)
+        self.aisi_file.write("kxchirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("kychirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("kzchirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("omegachirp ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write("0 ")
+        self.aisi_file.write("\n")
 
 
         
