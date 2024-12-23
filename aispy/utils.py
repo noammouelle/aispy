@@ -280,6 +280,9 @@ class AISFlow():
         for i in range(3+4*nlmt):
             self.aisi_file.write(str(-sign[i]*omega_chirp) + " ")
         self.aisi_file.write("\n")
+        self.aisi_file.write("waist ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(self.pulse_params['waist']) + " ")
         
 
     def _write_auto_stepwise_detuning(self):
@@ -455,6 +458,9 @@ class AISFlow():
         for i in range(3+4*nlmt):
             self.aisi_file.write("0 ")
         self.aisi_file.write("\n")
+        self.aisi_file.write("waist ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(self.pulse_params['waist']) + " ")
 
 
         
