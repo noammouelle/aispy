@@ -23,11 +23,13 @@ def load_data(filename):
             positions = file["positions"][:]
             velocities = file["velocities"][:]
             phase_shifts = file["phaseShifts"][:]
+            phase_shifts_err = file["phaseShiftErrors"][:]
             interference_flag = file["interferingFlag"][:]
 
         df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
-                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
-                        "phase_shifts":phase_shifts, "interference_flag":interference_flag})
+                       "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
+                       "phase_shifts":phase_shifts, "phase_shifts_errors":phase_shifts_err,
+                       "interference_flag":interference_flag})
     return df
 
 def concat_datasets(filepaths, output_filepath):
@@ -56,6 +58,7 @@ def concat_datasets(filepaths, output_filepath):
             h5f.create_dataset("positions", data=concatenated_df[["x", "y", "z"]].values)
             h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
             h5f.create_dataset("phaseShifts", data=concatenated_df["phase_shifts"].values)
+            h5f.create_dataset("phaseShiftErrors", data=concatenated_df["phase_shifts_errors"].values)
             h5f.create_dataset("interferingFlag", data=concatenated_df["interference_flag"].values)
 
 def get_params_dict(file_path):

@@ -92,7 +92,13 @@ class AISFlow():
         self.aisi_file.write('usedetvolselection {}\n'.format(self.simulation_params['usedetvolselection']))
         self.aisi_file.write('xdet {} {}\n'.format(self.simulation_params['xdet'][0], self.simulation_params['xdet'][1]))
         self.aisi_file.write('ydet {} {}\n'.format(self.simulation_params['ydet'][0], self.simulation_params['ydet'][1]))
-        self.aisi_file.write('zdet {} {}'.format(self.simulation_params['zdet'][0], self.simulation_params['zdet'][1]))
+        self.aisi_file.write('zdet {} {}\n'.format(self.simulation_params['zdet'][0], self.simulation_params['zdet'][1]))
+        self.aisi_file.write('gslqagabserr {}\n'.format(self.simulation_params['gslqagabserr']))
+        self.aisi_file.write('gslqagrelerr {}\n'.format(self.simulation_params['gslqagrelerr']))
+        self.aisi_file.write('gslkinodeabserr {}\n'.format(self.simulation_params['gslkinodeabserr']))
+        self.aisi_file.write('gslkinoderelerr {}\n'.format(self.simulation_params['gslkinoderelerr']))
+        self.aisi_file.write('gslpulseodeabserr {}\n'.format(self.simulation_params['gslpulseodeabserr']))
+        self.aisi_file.write('gslpulseoderelerr {}\n'.format(self.simulation_params['gslpulseoderelerr']))
         self.aisi_file.write('\n\n')
 
     def _write_sequence_params(self):
