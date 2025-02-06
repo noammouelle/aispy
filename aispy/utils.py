@@ -142,7 +142,7 @@ class AISFlow():
         beam_radius = self.pulse_params['beam_radius']
 
         # Zernike polynomials params
-        # format: {noll_index: [coeff1, coeff2, coeff3]}
+        # format: {noll_index: [coeff1_up, coeff2_up, coeff3_up, coeff1_down, coeff2_down, coeff3_down]}
         zernike_params = self.pulse_params['zernike_params']
 
         if lmt_order == 1:
@@ -315,14 +315,23 @@ class AISFlow():
         for zernike_noll_index in zernike_params.keys():
             self.aisi_file.write("zernikecoeff_{} ".format(zernike_noll_index))
             # write the coeffs for BS block (first 1 + (n-1)/2 pulses)
-            for i in range(int(1 + (lmt_order-1)/2)):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][0]) + " ")
+            for i in range(0,int(1 + (lmt_order-1)/2)):
+                if sign[i] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][0]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][3]) + " ")
             # write the coeffs for LMT block 1 (next n pulses)
             for i in range(lmt_order):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][1]) + " ")
+                if sign[i+int(1 + (lmt_order-1)/2)] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][1]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][4]) + " ")
             # write the coeffs for LMT block 2 (next 1 + (n-1)/2 pulses)
             for i in range(int(1 + (lmt_order-1)/2)):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][2]) + " ")
+                if sign[i+int(1 + (lmt_order-1)/2)+lmt_order] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][2]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][5]) + " ")
             self.aisi_file.write("\n")
         
 
@@ -528,15 +537,23 @@ class AISFlow():
         for zernike_noll_index in zernike_params.keys():
             self.aisi_file.write("zernikecoeff_{} ".format(zernike_noll_index))
             # write the coeffs for BS block (first 1 + (n-1)/2 pulses)
-            for i in range(int(1 + (lmt_order-1)/2)):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][0]) + " ")
+            for i in range(0,int(1 + (lmt_order-1)/2)):
+                if sign[i] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][0]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][3]) + " ")
             # write the coeffs for LMT block 1 (next n pulses)
             for i in range(lmt_order):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][1]) + " ")
+                if sign[i+int(1 + (lmt_order-1)/2)] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][1]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][4]) + " ")
             # write the coeffs for LMT block 2 (next 1 + (n-1)/2 pulses)
             for i in range(int(1 + (lmt_order-1)/2)):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][2]) + " ")
-            self.aisi_file.write("\n")
+                if sign[i+int(1 + (lmt_order-1)/2)+lmt_order] == 1:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][2]) + " ")
+                else:
+                    self.aisi_file.write(str(zernike_params[zernike_noll_index][5]) + " ")
 
 
         
