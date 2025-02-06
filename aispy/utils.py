@@ -244,8 +244,8 @@ class AISFlow():
         self.aisi_file.write("\n")
         # write the kz values
         self.aisi_file.write("kz ")
-        for kz_ in range(3+4*nlmt):
-            self.aisi_file.write(str(kz_detuned) + " ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(sign[i]*kz_detuned) + " ")
         self.aisi_file.write("\n")
         # write the detuned frequencies
         self.aisi_file.write("omega ")
@@ -289,6 +289,18 @@ class AISFlow():
         self.aisi_file.write("waist ")
         for i in range(3+4*nlmt):
             self.aisi_file.write(str(self.pulse_params['waist']) + " ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("focallength ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(self.pulse_params['focallength']) + " ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("zlaser ")
+        for i in range(3+4*nlmt):
+            if sign[i] == 1:
+                self.aisi_file.write(str(self.pulse_params['zupwardlaser']) + " ")
+            else:
+                self.aisi_file.write(str(self.pulse_params['zdownwardlaser']) + " ")
+        self.aisi_file.write("\n")
         
 
     def _write_auto_stepwise_detuning(self):
