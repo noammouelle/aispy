@@ -140,6 +140,7 @@ class AISFlow():
         phi0 = self.pulse_params['phi0']
         kx_psr = self.pulse_params['kx_psr']
         beam_radius = self.pulse_params['beam_radius']
+        baseline = self.pulse_params['baseline']
 
         # Zernike polynomials params
         # format: {noll_index: [coeff1_up, coeff2_up, coeff3_up, coeff1_down, coeff2_down, coeff3_down]}
@@ -310,6 +311,10 @@ class AISFlow():
         for i in range(3+4*nlmt):
             self.aisi_file.write(str(beam_radius) + " ")
         self.aisi_file.write("\n")
+        self.aisi_file.write("baseline ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(baseline) + " ")
+        self.aisi_file.write("\n")
 
         # Zernike coefficients
         for zernike_noll_index in zernike_params.keys():
@@ -347,6 +352,7 @@ class AISFlow():
         phi0 = self.pulse_params['phi0']
         kx_psr = self.pulse_params['kx_psr']
         beam_radius = self.pulse_params['beam_radius']
+        baseline = self.pulse_params['baseline']
 
         # Zernike polynomials params
         # format: {noll_index: [coeff1, coeff2, coeff3]}
@@ -531,6 +537,10 @@ class AISFlow():
         self.aisi_file.write("beamradius ")
         for i in range(3+4*nlmt):
             self.aisi_file.write(str(beam_radius) + " ")
+        self.aisi_file.write("\n")
+        self.aisi_file.write("baseline ")
+        for i in range(3+4*nlmt):
+            self.aisi_file.write(str(baseline) + " ")
         self.aisi_file.write("\n")
 
         # Zernike coefficients
