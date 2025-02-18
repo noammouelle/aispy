@@ -123,8 +123,10 @@ class AISFlow():
         # get the initial vertical velocity
         v0 = self.cloud_params['v0'][2]
         # get the v0-detuned frequency and wavevector
-        omega0_detuned = detuning(v0)
-        kz_detuned = omega0_detuned / c
+        omega0_detuned_plus = detuning(v0)
+        omega0_detuned_minus = detuning(-v0)
+        kz_detuned_plus = omega0_detuned_plus / c
+        kz_detuned_minus = omega0_detuned_minus / c
         # compute the absolute values of the frequency chirp and the k-vector chirp
         omega_chirp = self.sequence_params['frequencychirp'] * kz * g
         k_chirp = self.sequence_params['kchirp'] * kz * g / c
@@ -139,6 +141,7 @@ class AISFlow():
         wtype = self.pulse_params['wtype']
         phi0 = self.pulse_params['phi0']
         kx_psr = self.pulse_params['kx_psr']
+        ky_psr = self.pulse_params['ky_psr']
         beam_radius = self.pulse_params['beam_radius']
         baseline = self.pulse_params['baseline']
 
@@ -226,6 +229,7 @@ class AISFlow():
         kx = np.zeros(3+4*nlmt)
         ky = np.zeros(3+4*nlmt)
         kx[-1] = kx_psr #psr
+        ky[-1] = ky_psr #psr
 
         # write the start times
         self.aisi_file.write("# Pulse parameters\n")
@@ -251,12 +255,18 @@ class AISFlow():
         # write the kz values
         self.aisi_file.write("kz ")
         for i in range(3+4*nlmt):
-            self.aisi_file.write(str(sign[i]*kz_detuned) + " ")
+            if sign[i] == 1:
+                self.aisi_file.write(str(kz_detuned_plus) + " ")
+            else:
+                self.aisi_file.write(str(-kz_detuned_minus) + " ")
         self.aisi_file.write("\n")
         # write the detuned frequencies
         self.aisi_file.write("omega ")
-        for freq_ in range(3+4*nlmt):
-            self.aisi_file.write(str(omega0_detuned) + " ")
+        for i in range(3+4*nlmt):
+            if sign[i] == 1:
+                self.aisi_file.write(str(omega0_detuned_plus) + " ")
+            else:
+                self.aisi_file.write(str(omega0_detuned_minus) + " ")
         self.aisi_file.write("\n")
         # write the rabi frequency
         self.aisi_file.write("rabifreq ")
@@ -351,6 +361,7 @@ class AISFlow():
         wtype = self.pulse_params['wtype']
         phi0 = self.pulse_params['phi0']
         kx_psr = self.pulse_params['kx_psr']
+        ky_psr = self.pulse_params['ky_psr']
         beam_radius = self.pulse_params['beam_radius']
         baseline = self.pulse_params['baseline']
 
@@ -453,6 +464,7 @@ class AISFlow():
         kx = np.zeros_like(detuned_kz)
         ky = np.zeros_like(detuned_kz)
         kx[-1] = kx_psr #psr
+        ky[-1] = ky_psr #psr
 
         # write the start times
         self.aisi_file.write("# Pulse parameters\n")
