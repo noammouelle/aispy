@@ -87,6 +87,19 @@ class AISFlow():
         self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
         self.aisi_file.write('coherencelength {}\n'.format(self.simulation_params['coherencelength']))
         self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
+        self.aisi_file.write('usepathselection {}\n'.format(self.simulation_params['usepathselection']))
+
+        # compute the 4 path strings for the 4 main interferometer paths (assuming initially in the ground state)
+        pathstosimulate = ["0" + "10"*self.sequence_params['lmt_order'] + "0",
+                           "0" + "01"*self.sequence_params['lmt_order'] + "0",
+                           "0" + "10"*self.sequence_params['lmt_order'] + "1",
+                           "0" + "01"*self.sequence_params['lmt_order'] + "1"]
+
+        self.aisi_file.write('pathstosimulate ')
+        for path in pathstosimulate:
+            self.aisi_file.write(path + " ")
+        self.aisi_file.write('\n')
+
         self.aisi_file.write('ignoredetuning {}\n'.format(self.simulation_params['ignoredetuning']))
         self.aisi_file.write('seed {}\n'.format(self.simulation_params['seed']))
         self.aisi_file.write('usedetvolselection {}\n'.format(self.simulation_params['usedetvolselection']))
