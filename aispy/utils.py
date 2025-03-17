@@ -88,6 +88,7 @@ class AISFlow():
         self.aisi_file.write('coherencelength {}\n'.format(self.simulation_params['coherencelength']))
         self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
         self.aisi_file.write('usepathselection {}\n'.format(self.simulation_params['usepathselection']))
+        self.aisi_file.write('usestaticapprox {}\n'.format(self.simulation_params['usestaticapprox']))
 
         # compute the 4 path strings for the 4 main interferometer paths (assuming initially in the ground state)
         pathstosimulate = ["0" + "10"*self.sequence_params['lmt_order'] + "0",
