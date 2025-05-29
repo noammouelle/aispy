@@ -340,28 +340,14 @@ class AISFlow():
             self.aisi_file.write(str(baseline) + " ")
         self.aisi_file.write("\n")
 
-        # Zernike coefficients
-        for zernike_noll_index in zernike_params.keys():
-            self.aisi_file.write("zernikecoeff_{} ".format(zernike_noll_index))
-            # write the coeffs for BS block (first 1 + (n-1)/2 pulses)
-            for i in range(0,int(1 + (lmt_order-1)/2)):
-                if sign[i] == 1:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][0]) + " ")
-                else:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][3]) + " ")
-            # write the coeffs for LMT block 1 (next n pulses)
-            for i in range(lmt_order):
-                if sign[i+int(1 + (lmt_order-1)/2)] == 1:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][1]) + " ")
-                else:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][4]) + " ")
-            # write the coeffs for LMT block 2 (next 1 + (n-1)/2 pulses)
-            for i in range(int(1 + (lmt_order-1)/2)):
-                if sign[i+int(1 + (lmt_order-1)/2)+lmt_order] == 1:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][2]) + " ")
-                else:
-                    self.aisi_file.write(str(zernike_params[zernike_noll_index][5]) + " ")
-            self.aisi_file.write("\n")
+        # paths to interpolation params files
+        self.aisi_file.write("beaminterpolationparamsfilenames ")
+        for i in range(3+4*nlmt):
+            if sign[i] == 1:
+                self.aisi_file.write(self.pulse_params['beaminterpolationparamsfilenames'][0] + " ")
+            else:
+                self.aisi_file.write(self.pulse_params['beaminterpolationparamsfilenames'][1] + " ")
+        self.aisi_file.write("\n")
         
 
     def _write_auto_stepwise_detuning(self):
