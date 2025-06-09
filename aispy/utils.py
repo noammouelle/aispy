@@ -291,7 +291,8 @@ class AISFlow():
 
         sum_recoil_upper += hbar * kz_ / m
 
-        print("v0: ", v0)
+        # debug print
+        #print("v0: ", v0)
 
         # first block is index 1 to n-1
         for i in range(1,n):
@@ -304,7 +305,8 @@ class AISFlow():
             
             vtot = v_t + v_recoil
 
-            print("vtot: ", vtot)
+            # debug print
+            #print("vtot: ", vtot)
 
             if sign[i] == 1:
                 omega_ = detuning(vtot, is_e_to_g[i])
@@ -330,7 +332,8 @@ class AISFlow():
             # compute the velocity due to recoil
             v_recoil = sum_recoil_upper
             vtot = v_t + v_recoil
-            print("vtot: ", vtot)
+            # debug print
+            #print("vtot: ", vtot)
             if sign[i] == 1:
                 omega_ = detuning(vtot, is_e_to_g[i])
                 kz_ = omega_ / c
@@ -360,7 +363,8 @@ class AISFlow():
         kz_detuned_values.append(kz_)
         omega0_detuned_values.append(omega_) 
 
-        print("vtot: ", vtot)
+        # debug print
+        #print("vtot: ", vtot)
 
         # increment the recoil sum for the lower arm
         sum_recoil_lower = hbar * kz_ / m       
@@ -374,7 +378,8 @@ class AISFlow():
             # compute the velocity due to recoil
             v_recoil = sum_recoil_lower
             vtot = v_t + v_recoil
-            print("vtot: ", vtot)
+            # debug print
+            #print("vtot: ", vtot)
             if sign[i] == 1:
                 omega_ = detuning(vtot, not is_e_to_g[i]) # note the not here, dont know why it works like this
                 kz_ = omega_ / c
@@ -399,7 +404,8 @@ class AISFlow():
             # compute the velocity due to recoil
             v_recoil = sum_recoil_lower
             vtot = v_t + v_recoil
-            print("vtot: ", vtot)
+            # debug print
+            #print("vtot: ", vtot)
             if sign[i] == 1:
                 omega_ = detuning(vtot, not is_e_to_g[i])
                 kz_ = omega_ / c
@@ -427,8 +433,8 @@ class AISFlow():
         kz_ = omega_ / c
         kz_detuned_values.append(kz_)
         omega0_detuned_values.append(omega_)
-
-        print("vtot: ", vtot)
+        # debug print
+        #print("vtot: ", vtot)
 
         # transverse wavevector components
         kx = np.zeros(3+4*nlmt)
