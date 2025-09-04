@@ -1,6 +1,7 @@
 from mpmath import mp, sqrt, cos, cosh, sin, sinh
 import numpy as np
 import datetime
+import matplotlib.pyplot as plt
 
 mp.dps = 34  # Set decimal precision to 34 digits
 
@@ -63,6 +64,8 @@ class AISFlow():
         self._write_io_params()
         # write the pulse parameters
         self._write_pulse_params()
+        # close the aisi file
+        self.aisi_file.close()
 
     def _write_header(self):
         self.aisi_file.write('#     ___    _________           \n')
@@ -82,7 +85,8 @@ class AISFlow():
         self.aisi_file.write('natoms {}\n'.format(self.cloud_params['natoms']))
         self.aisi_file.write('initialstate {}\n'.format(self.cloud_params['initialstate']))
         self.aisi_file.write('sigma {}\n'.format(self.cloud_params['sigma']))
-        self.aisi_file.write('temp {}\n'.format(self.cloud_params['temp']))
+        self.aisi_file.write('transtemp {}\n'.format(self.cloud_params['transtemp']))
+        self.aisi_file.write('longtemp {}\n'.format(self.cloud_params['longtemp']))
         self.aisi_file.write('x0 {} {} {}\n'.format(self.cloud_params['x0'][0], self.cloud_params['x0'][1], self.cloud_params['x0'][2]))
         self.aisi_file.write('v0 {} {} {}\n'.format(self.cloud_params['v0'][0], self.cloud_params['v0'][1], self.cloud_params['v0'][2]))
         self.aisi_file.write('\n')
