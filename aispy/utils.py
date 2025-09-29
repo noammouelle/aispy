@@ -144,21 +144,40 @@ class AISFlow():
         self.aisi_file.write('printwavepackets {}\n\n'.format(self.io_params['printwavepackets']))
 
     def _write_pulse_params(self):
-        if self.sequence_params['automaticdetuning'] == 1:
-            if self.sequence_params['ultranarrow'] == 1:
-                self._write_auto_stepwise_detuning_ultranarrow()
-            else:
-                self._write_auto_stepwise_detuning()
-        else:
-            if (self.sequence_params['frequencychirp'] != 0) or (self.sequence_params['kchirp'] != 0):
+        if self.sequence_params['sequencename'] == 'MZ':
+            if self.sequence_params['automaticdetuning'] == 1:
                 if self.sequence_params['ultranarrow'] == 1:
-                    self._write_chirped_sequence_ultranarrow()
+                    self._write_auto_stepwise_detuning_ultranarrow_MZ()
                 else:
-                    self._write_chirped_sequence()
+                    self._write_auto_stepwise_detuning_MZ()
             else:
-                raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
+                if (self.sequence_params['frequencychirp'] != 0) or (self.sequence_params['kchirp'] != 0):
+                    if self.sequence_params['ultranarrow'] == 1:
+                        self._write_chirped_sequence_ultranarrow_MZ()
+                    else:
+                        self._write_chirped_sequence_MZ()
+                else:
+                    raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
+                
+        elif self.sequence_params['sequencename'] == 'RB':
+            if self.sequence_params['automaticdetuning'] == 1:
+                if self.sequence_params['ultranarrow'] == 1:
+                    self._write_auto_stepwise_detuning_ultranarrow_RB()
+                #else:
+                #    self._write_auto_stepwise_detuning()
+            else:
+                if (self.sequence_params['frequencychirp'] != 0) or (self.sequence_params['kchirp'] != 0):
+                    if self.sequence_params['ultranarrow'] == 1:
+                        self._write_chirped_sequence_ultranarrow_RB()
+                    #else:
+                    #    self._write_chirped_sequence()
+                else:
+                    raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
+        
+        else:
+            raise ValueError("Sequence Name unknown")
 
-    def _write_auto_stepwise_detuning_ultranarrow(self):
+    def _write_auto_stepwise_detuning_ultranarrow_MZ(self):
         # get the initial vertical velocity
         v0 = self.cloud_params['v0'][2]
 
@@ -559,7 +578,7 @@ class AISFlow():
                     self.aisi_file.write(str(zernike_params[zernike_noll_index][5]) + " ")
             self.aisi_file.write("\n")
 
-    def _write_chirped_sequence_ultranarrow(self):
+    def _write_chirped_sequence_ultranarrow_MZ(self):
         # get the initial vertical velocity
         v0 = self.cloud_params['v0'][2]
 
@@ -879,7 +898,7 @@ class AISFlow():
                     self.aisi_file.write(str(zernike_params[zernike_noll_index][5]) + " ")
             self.aisi_file.write("\n")
         
-    def _write_chirped_sequence(self):
+    def _write_chirped_sequence_MZ(self):
         # get the initial vertical velocity
         v0 = self.cloud_params['v0'][2]
         # get the v0-detuned frequency and wavevector
@@ -1110,7 +1129,7 @@ class AISFlow():
             self.aisi_file.write("\n")
         
 
-    def _write_auto_stepwise_detuning(self):
+    def _write_auto_stepwise_detuning_MZ(self):
         v0 = self.cloud_params['v0'][2] # z component of velocity
         z0 = self.cloud_params['x0'][2]
         t_init = self.sequence_params['t_init']
