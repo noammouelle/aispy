@@ -102,6 +102,8 @@ class AISFlow():
         self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
         self.aisi_file.write('usepathselection {}\n'.format(self.simulation_params['usepathselection']))
         self.aisi_file.write('usestaticapprox {}\n'.format(self.simulation_params['usestaticapprox']))
+        self.aisi_file.write('ultrafast {}\n'.format(self.simulation_params['ultrafast']))
+
 
         # compute the 4 path strings for the 4 main interferometer paths (assuming initially in the ground state)
         if self.sequence_params['ultranarrow'] == 1:
