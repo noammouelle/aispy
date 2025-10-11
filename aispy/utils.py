@@ -179,6 +179,72 @@ class AISFlow():
         else:
             raise ValueError("Sequence Name unknown")
 
+    def build_accel_pulses(
+    t0_start,          # block start time
+    vz0,               # initial vertical velocity (z)
+    nkicks,            # number of π pulses in this block
+    dt_pi,             # π-pulse duration
+    dt_lmt,            # LMT spacing between π pulses
+    recoil_sum,        # cumulative recoil (m/s) entering the block (for that arm)
+    sign_seq,          # list of +1 / -1 of length nkicks, pulse direction per kick
+    e_to_g_seq=None    # list of booleans (len nkicks); if None -> all False
+    ):
+        """
+        Build an acceleration (LMT) block: start/end times and per-pulse (kz, omega),
+        updating the recoil sum exactly like the original ultranarrow MZ code.
+
+        Returns:
+            dict with keys: 't0','t1','kz','omega','sign','recoil_sum'
+        """
+        if e_to_g_seq is None:
+            e_to_g_seq = [False] * nkicks
+        assert len(sign_seq) == nkicks
+        assert len(e_to_g_seq) == nkicks
+
+        start_times, end_times = [], []
+        kz_vals, omega_vals, signs = [], [], []
+
+        for i in range(nkicks):
+            # Pulse timing
+            t_i = t0_start + i * (dt_pi + dt_lmt)
+            start_times.append(t_i)
+            end_times.append(t_i + dt_pi)
+
+            # Classical + recoil velocity at pulse i
+            v_t = vz0 - g * t_i
+            v_tot = v_t + recoil_sum
+
+            # Direction & detuning branch as in your current code
+            s = sign_seq[i]
+            is_e_to_g = e_to_g_seq[i]
+
+            if s == +1:
+                omega_i = detuning(v_tot, is_e_to_g)
+                kz_i = omega_i / c
+                # emit +kz
+                kz_vals.append(kz_i)
+                omega_vals.append(omega_i)
+                # update recoil by +ħ kz_i / m
+                recoil_sum += hbar * kz_i / m
+            else:  # s == -1
+                omega_i = detuning(-v_tot, is_e_to_g)
+                kz_i = omega_i / c
+                # emit -kz_i (note: update recoil with +ħ*kz_i/m, same as your code)
+                kz_vals.append(-kz_i)
+                omega_vals.append(omega_i)
+                recoil_sum += hbar * kz_i / m
+
+            signs.append(s)
+
+        return {
+            't0': start_times,
+            't1': end_times,
+            'kz': kz_vals,
+            'omega': omega_vals,
+            'sign': signs,
+            'recoil_sum': recoil_sum
+        }
+
     def _write_auto_stepwise_detuning_ultranarrow_MZ(self):
         # get the initial vertical velocity
         v0 = self.cloud_params['v0'][2]
@@ -231,235 +297,161 @@ class AISFlow():
         assert(lmt_order%2 == 1)
         nlmt = int((lmt_order-1))
 
-        # calculate the time sequence
+        # calculate times
         dt_bs = pi/(2*rabi_freq)
         dt_pi = pi/(rabi_freq)
-
-        # compute the effective interrogation time
         T = T - 2*(n-1)*(dt_lmt + dt_pi)
 
         lmt_pulse_index = np.arange(0, nlmt+1)
         t_start_shifted = lmt_pulse_index * (dt_pi + dt_lmt)
         t_end_shifted   = t_start_shifted + dt_pi
-        if nlmt > 1:
-            t_tot           = t_end_shifted[-1]
-        else:
-            t_tot = mp.mpf('0')
-        
+        t_tot = t_end_shifted[-1] if nlmt > 1 else mp.mpf('0')
+
         t_bs1 = t_init
         t0 = dt_bs + t_init + dt1
         t1 = t0 + t_tot + T
-        t_pi = t1 + t_tot + dt2
-        t2 = t_pi + dt_pi + dt3
+        t_pi_t = t1 + t_tot + dt2
+        t2 = t_pi_t + dt_pi + dt3
         t3 = t2 + t_tot + T
-        t_bs2 = t3 + t_tot + dt4 
-        start_times = []
-        end_times = []
+        t_bs2 = t3 + t_tot + dt4
 
-        # initial pi/2 pulse
-        start_times.append(t_bs1)
-        end_times.append(t_bs1 + dt_bs)
+        start_times, end_times = [], []
+        # initial pi/2
+        start_times.append(t_bs1); end_times.append(t_bs1 + dt_bs)
 
-        # LMT block 1
-        for i in range(nlmt):
-            start_times.append(t0 + t_start_shifted[i])
-            end_times.append(t0 + t_end_shifted[i])
+        # --- (A) REMOVE the old manual 'LMT block 1' t0/t1 appends ---
+        # for i in range(nlmt):
+        #     start_times.append(t0 + t_start_shifted[i])
+        #     end_times.append(t0 + t_end_shifted[i])
 
-        # LMT block 2
-        for i in range(nlmt):
+        # keep blocks 2/3/4 timing appends as before:
+        for i in range(nlmt):  # LMT block 2
             start_times.append(t1 + t_start_shifted[i])
             end_times.append(t1 + t_end_shifted[i])
-        
-        # pi pulse 
-        start_times.append(t_pi)
-        end_times.append(t_pi+ dt_pi)
-        
-        # LMT block 3
-        for i in range(nlmt):
+        # mirror
+        start_times.append(t_pi_t); end_times.append(t_pi_t + dt_pi)
+        for i in range(nlmt):  # LMT block 3
             start_times.append(t2 + t_start_shifted[i])
             end_times.append(t2 + t_end_shifted[i])
-
-        # LMT block 4
-        for i in range(nlmt):
+        for i in range(nlmt):  # LMT block 4
             start_times.append(t3 + t_start_shifted[i])
             end_times.append(t3 + t_end_shifted[i])
+        # final bs
+        start_times.append(t_bs2); end_times.append(t_bs2 + dt_bs)
 
-        # final bs pulse
-        start_times.append(t_bs2)
-        end_times.append(t_bs2 + dt_bs)
-
-        # compute the direction of the pulses
+        # signs as before
         sign = []
         for i in range(n):
             sign.append((-1)**i)
-        for i in range(2*n-1): # block 2 and 3
+        for i in range(2*n-1):
             sign.append((-1)**i)
-        for i in range(n): # block 4 and beam splitter pulse
+        for i in range(n):
             sign.append((-1)**i)
 
-        # figure out which transitions are e->g
-        is_e_to_g = [False] + [True, False]*(2*n-2)+ [True] + [True, False]*(2*n-2) + [False]
+        is_e_to_g = [False] + [True, False]*(2*n-2) + [True] + [True, False]*(2*n-2) + [False]
 
-        # compute the kz and omega values for each block
+        # detuning arrays
         kz_detuned_values = []
         omega0_detuned_values = []
 
-        # sum of the upper arm and lower arm recoil
-        sum_recoil_upper = 0
-        sum_recoil_lower = 0
-
-        # pi/2 pulse
+        # pi/2 (unchanged)
         omega_ = detuning(v0, is_e_to_g[0])
         kz_ = omega_ / c
         kz_detuned_values.append(kz_)
         omega0_detuned_values.append(omega_)
+        sum_recoil_upper = hbar * kz_ / m
+        sum_recoil_lower = 0
 
-        sum_recoil_upper += hbar * kz_ / m
+        # --- (B) REPLACE the old block-1 detuning loop with the helper ---
+        # OLD:
+        # for i in range(1, n):
+        #     ... (per-pulse detuning and recoil updates)
 
-        # debug print
-        #print("v0: ", v0)
+        nkicks_b1 = nlmt                      # number of π pulses in block 1
+        sign_seq_b1 = [sign[i] for i in range(1, n)]
+        e2g_seq_b1  = [is_e_to_g[i] for i in range(1, n)]
 
-        # first block is index 1 to n-1
-        for i in range(1,n):
-            # get the initial time of the pulse
-            t0 = start_times[i]
-            # compute the classical velocity at the time of the pulse
-            v_t = v0 - g * t0
-            # compute the velocity due to recoil
-            v_recoil = sum_recoil_upper
-            
-            vtot = v_t + v_recoil
+        b1 = self._build_accel_pulses(
+            t0_start=t0,
+            vz0=v0,
+            nkicks=nkicks_b1,
+            dt_pi=dt_pi,
+            dt_lmt=dt_lmt,
+            recoil_sum=sum_recoil_upper,
+            sign_seq=sign_seq_b1,
+            e_to_g_seq=e2g_seq_b1
+        )
 
-            # debug print
-            #print("vtot: ", vtot)
+        # --- (C) insert helper outputs in the global arrays exactly where block 1 belongs ---
+        # Block-1 times go immediately after the initial BS pulse.
+        # We removed the old time appends for block 1, so we splice them back here at index 1.
+        start_times[1:1] = b1["t0"]
+        end_times[1:1]   = b1["t1"]
 
-            if sign[i] == 1:
-                omega_ = detuning(vtot, is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(kz_)
-                omega0_detuned_values.append(omega_)
+        # Detuning/k arrays: after the initial pi/2 entry, append block-1 results
+        kz_detuned_values.extend(b1["kz"])
+        omega0_detuned_values.extend(b1["omega"])
+        sum_recoil_upper = b1["recoil_sum"]  # carry forward for subsequent blocks
 
-                sum_recoil_upper += hbar * kz_ / m
-            else:
-                omega_ = detuning(-vtot, is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(-kz_)
-                omega0_detuned_values.append(omega_)
-
-                sum_recoil_upper += hbar * kz_ / m
-
-        # second block is index n to 2n-2 (not including the mirror pulse)
+        # --- continue with original code for blocks 2, mirror, 3, 4, final BS ---
+        # second block: indices n .. 2n-2  (unchanged)
         for i in range(n, 2*n-1):
-            # get the initial time of the pulse
-            t0 = start_times[i]
-            # compute the classical velocity at the time of the pulse
-            v_t = v0 - g * t0
-            # compute the velocity due to recoil
-            v_recoil = sum_recoil_upper
-            vtot = v_t + v_recoil
-            # debug print
-            #print("vtot: ", vtot)
+            t0i = start_times[i]
+            v_t = v0 - g * t0i
+            vtot = v_t + sum_recoil_upper
             if sign[i] == 1:
-                omega_ = detuning(vtot, is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(kz_)
-                omega0_detuned_values.append(omega_)
-
-                sum_recoil_upper -= hbar * kz / m # block 2 slows down the upper arm
+                omega_ = detuning(vtot, is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(kz_); omega0_detuned_values.append(omega_)
+                sum_recoil_upper -= hbar * kz / m
             else:
-                omega_ = detuning(-vtot, is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(-kz_)
-                omega0_detuned_values.append(omega_)
-
+                omega_ = detuning(-vtot, is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(-kz_); omega0_detuned_values.append(omega_)
                 sum_recoil_upper -= hbar * kz_ / m
 
-        # mirror pulse
+        # mirror (unchanged)
         i = 2*n-1
-        # get the initial time of the pulse
-        t0 = start_times[i]
-        # compute the classical velocity at the time of the pulse
-        v_t = v0 - g * t0
-        # compute the velocity due to recoil, say hbar * kz / 2 m as adresses both arms
-        v_recoil = hbar*kz_/ (1*m)
+        t0i = start_times[i]
+        v_t = v0 - g * t0i
+        v_recoil = hbar*kz_/(1*m)
         vtot = v_t + v_recoil
-        omega_ = detuning(vtot, is_e_to_g[i])
-        kz_ = omega_ / c
-        kz_detuned_values.append(kz_)
-        omega0_detuned_values.append(omega_) 
+        omega_ = detuning(vtot, is_e_to_g[i]); kz_ = omega_ / c
+        kz_detuned_values.append(kz_); omega0_detuned_values.append(omega_)
+        sum_recoil_lower = hbar * kz_ / m
 
-        # debug print
-        #print("vtot: ", vtot)
-
-        # increment the recoil sum for the lower arm
-        sum_recoil_lower = hbar * kz_ / m       
-
-        # third block is index 2n to 3n-2
+        # third block: indices 2n .. 3n-2 (unchanged)
         for i in range(2*n, 3*n-1):
-            # get the initial time of the pulse
-            t0 = start_times[i]
-            # compute the classical velocity at the time of the pulse
-            v_t = v0 - g * t0
-            # compute the velocity due to recoil
-            v_recoil = sum_recoil_lower
-            vtot = v_t + v_recoil
-            # debug print
-            #print("vtot: ", vtot)
+            t0i = start_times[i]
+            v_t = v0 - g * t0i
+            vtot = v_t + sum_recoil_lower
             if sign[i] == 1:
-                omega_ = detuning(vtot, not is_e_to_g[i]) # note the not here, dont know why it works like this
-                kz_ = omega_ / c
-                kz_detuned_values.append(kz_)
-                omega0_detuned_values.append(omega_)
-
+                omega_ = detuning(vtot, not is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(kz_); omega0_detuned_values.append(omega_)
                 sum_recoil_lower += hbar * kz_ / m
             else:
-                omega_ = detuning(-vtot, not is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(-kz_)
-                omega0_detuned_values.append(omega_)
-
+                omega_ = detuning(-vtot, not is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(-kz_); omega0_detuned_values.append(omega_)
                 sum_recoil_lower += hbar * kz_ / m
 
-        # fourth block is index 3n-1 to 4n-3
+        # fourth block: indices 3n-1 .. 4n-3 (unchanged)
         for i in range(3*n-1, 4*n-2):
-            # get the initial time of the pulse
-            t0 = start_times[i]
-            # compute the classical velocity at the time of the pulse
-            v_t = v0 - g * t0
-            # compute the velocity due to recoil
-            v_recoil = sum_recoil_lower
-            vtot = v_t + v_recoil
-            # debug print
-            #print("vtot: ", vtot)
+            t0i = start_times[i]
+            v_t = v0 - g * t0i
+            vtot = v_t + sum_recoil_lower
             if sign[i] == 1:
-                omega_ = detuning(vtot, not is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(kz_)
-                omega0_detuned_values.append(omega_)
-
+                omega_ = detuning(vtot, not is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(kz_); omega0_detuned_values.append(omega_)
                 sum_recoil_lower -= hbar * kz_ / m
             else:
-                omega_ = detuning(-vtot, not is_e_to_g[i])
-                kz_ = omega_ / c
-                kz_detuned_values.append(-kz_)
-                omega0_detuned_values.append(omega_)
-
+                omega_ = detuning(-vtot, not is_e_to_g[i]); kz_ = omega_ / c
+                kz_detuned_values.append(-kz_); omega0_detuned_values.append(omega_)
                 sum_recoil_lower -= hbar * kz_ / m
 
-        # final beam splitter pulse
-        # get the initial time of the pulse
-        t0 = start_times[-1]
-        # compute the classical velocity at the time of the pulse
-        v_t = v0 - g * t0
-        # compute the velocity due to recoil, say hbar * kz / 2 m as adresses both arms
-        v_recoil = hbar*kz / (1*m)*0
-        vtot = v_t + v_recoil
-        omega_ = detuning(vtot, is_e_to_g[-1])
-        kz_ = omega_ / c
-        kz_detuned_values.append(kz_)
-        omega0_detuned_values.append(omega_)
-        # debug print
-        #print("vtot: ", vtot)
+        # final beam splitter (unchanged)
+        t0i = start_times[-1]
+        v_t = v0 - g * t0i
+        vtot = v_t  # + 0 recoil per your original
+        omega_ = detuning(vtot, is_e_to_g[-1]); kz_ = omega_ / c
+        kz_detuned_values.append(kz_); omega0_detuned_values.append(omega_)
 
         # transverse wavevector components
         kx = np.zeros(3+4*nlmt)
