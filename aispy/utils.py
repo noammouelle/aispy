@@ -149,7 +149,8 @@ class AISFlow():
         if self.sequence_params['sequencename'] == 'MZ':
             if self.sequence_params['automaticdetuning'] == 1:
                 if self.sequence_params['ultranarrow'] == 1:
-                    self._write_auto_stepwise_detuning_ultranarrow_MZ()
+                    #self._write_auto_stepwise_detuning_ultranarrow_MZ()
+                    self._write_ultranarrow_MZ_Lloops()
                 else:
                     self._write_auto_stepwise_detuning_MZ()
             else:
@@ -551,7 +552,7 @@ class AISFlow():
             # odd total diamonds: [T1,...,TL-1, TL, TL-1,...,T1]
             return base + base[-2::-1]
 
-    def _write_ultranarrow_MZ_Lloops(self, T_base, L):
+    def _write_ultranarrow_MZ_Lloops(self):
         """
         Write a symmetric L-loop ultranarrow MZ sequence (L diamonds).
         T_base: list of interrogation times [T1, ..., TL].
@@ -560,6 +561,8 @@ class AISFlow():
         """
 
         # ---- unpack
+        T_base = self.sequence_params['interrogation_time']
+        L = self.sequence_params['loopnumber']
         v0 = self.cloud_params['v0'][2]
         n  = self.sequence_params['lmt_order']       # must be odd
         assert n % 2 == 1, "ultranarrow requires odd lmt_order"
@@ -578,6 +581,7 @@ class AISFlow():
         # timing constants (match your single-loop conventions)
         dt_bs = pi / (2 * rabi_freq)
         dt_pi = pi / (    rabi_freq)
+
         # same per-block local spacings as your ultranarrow MZ
         dt1 = dt_lmt; dt2 = dt_lmt; dt3 = dt_lmt; dt4 = dt_lmt
 
@@ -600,8 +604,12 @@ class AISFlow():
                 T_full = self._make_palindrome(T_base, include_center_twice=True)
             else:
                 T_full = self._make_palindrome(T_base, include_center_twice=False)
-            T_full = list(T_base) + list(T_base[-2::-1])  # [T1,...,TL-1, TL, TL-1,...,T1]
+            #T_full = list(T_base) + list(T_base[-2::-1])  # [T1,...,TL-1, TL, TL-1,...,T1]
         D = len(T_full)                  # number of diamonds in the full chain
+
+        # ----- compute the effective interrogation times
+        for i in range(len(T_full)):
+            T_full[i] = T_full[i] - 2*(n-1)*(dt_lmt + dt_pi)
 
         # ----- pulse arrays
         start_times, end_times = [], []
@@ -680,9 +688,9 @@ class AISFlow():
         # Per your single-loop pattern with odd n, the block start signs are:
         #   B1: +1   (accel upper),   B2: -1   (decel upper, uses global kz for s=+1),
         #   B3: +1   (accel lower, flip e2g),  B4: +1   (decel lower, detuned kz for both signs)
-        start_sign_B1 = +1
-        start_sign_B2 = -1              # because n is odd
-        start_sign_B3 = +1
+        start_sign_B1 = -1
+        start_sign_B2 = +1              # because n is odd
+        start_sign_B3 = -1
         start_sign_B4 = +1
 
         # walk diamonds
