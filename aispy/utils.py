@@ -48,22 +48,20 @@ class AISFlow():
         self.simulation_params = param_dict['simulation_params']
         self.io_params = param_dict['io_params']
 
+        # this will be set by the pulse writer after we actually build e->g schedules
+        self._paths_from_e2g = None
+
         # open the aisi file
         self.aisi_file = open(workdir+'/'+flowdir+'.aisi', 'w')
-        # write the header
+
         self._write_header()
-        # write the cloud parameters
         self._write_cloud_params()
-        # write the potential parameters
         self._write_potential_params()
-        # write the simulation parameters
-        self._write_simulation_params()
-        # write the sequence parameters
+        self._write_simulation_params()   
         self._write_sequence_params()
-        # write IO parameters
         self._write_io_params()
-        # write the pulse parameters
-        self._write_pulse_params()
+        self._write_pulse_params()        
+        
         # close the aisi file
         self.aisi_file.close()
 
@@ -96,45 +94,38 @@ class AISFlow():
         self.aisi_file.write('utype {}\n\n'.format(self.potential_params['utype']))
 
     def _write_simulation_params(self):
-        self.aisi_file.write('# Simulation parameters\n')
-        self.aisi_file.write('amplitudethreshold {}\n'.format(self.simulation_params['amplitudethreshold']))
-        self.aisi_file.write('coherencelength {}\n'.format(self.simulation_params['coherencelength']))
-        self.aisi_file.write('usemcbranching {}\n'.format(self.simulation_params['usemcbranching']))
-        self.aisi_file.write('usepathselection {}\n'.format(self.simulation_params['usepathselection']))
-        self.aisi_file.write('usestaticapprox {}\n'.format(self.simulation_params['usestaticapprox']))
-        self.aisi_file.write('ultrafast {}\n'.format(self.simulation_params['ultrafast']))
+        f = self.aisi_file
+        s = self.simulation_params
+        q = self.sequence_params
 
+        f.write('# Simulation parameters\n')
+        f.write(f'amplitudethreshold {s["amplitudethreshold"]}\n')
+        f.write(f'coherencelength {s["coherencelength"]}\n')
+        f.write(f'usemcbranching {s["usemcbranching"]}\n')
+        f.write(f'usepathselection {s["usepathselection"]}\n')
+        f.write(f'usestaticapprox {s["usestaticapprox"]}\n')
+        f.write(f'ultrafast {s["ultrafast"]}\n')
 
-        # compute the 4 path strings for the 4 main interferometer paths (assuming initially in the ground state)
-        if self.sequence_params['ultranarrow'] == 1:
-            path0 = "0"*(2*self.sequence_params['lmt_order']-1) + "01"*self.sequence_params['lmt_order']
-            path1 = "01"*self.sequence_params['lmt_order'] + "0"*(2*self.sequence_params['lmt_order']-1)
-            pathstosimulate = [path0+ "0", path0 + "1",
-                               path1 + "0", path1 + "1"]
-        else:
-            pathstosimulate = ["0" + "10"*self.sequence_params['lmt_order'] + "0",
-                        "0" + "01"*self.sequence_params['lmt_order'] + "0",
-                        "0" + "10"*self.sequence_params['lmt_order'] + "1",
-                        "0" + "01"*self.sequence_params['lmt_order'] + "1"]
+        # --- pathstosimulate ---
+        # Prefer e->g-derived paths if the pulse writer already built them; else fallback to legacy.
+        f.write('pathstosimulate ')
+        pts = self._build_paths_to_simulate(self.sequence_params["loopnumber"],self.sequence_params["lmt_order"])
+        for p in pts:
+            self.aisi_file.write(p + " ")
+        f.write('\n')
 
-        self.aisi_file.write('pathstosimulate ')
-        for path in pathstosimulate:
-            self.aisi_file.write(path + " ")
-        self.aisi_file.write('\n')
-
-        self.aisi_file.write('ignoredetuning {}\n'.format(self.simulation_params['ignoredetuning']))
-        self.aisi_file.write('seed {}\n'.format(self.simulation_params['seed']))
-        self.aisi_file.write('usedetvolselection {}\n'.format(self.simulation_params['usedetvolselection']))
-        self.aisi_file.write('xdet {} {}\n'.format(self.simulation_params['xdet'][0], self.simulation_params['xdet'][1]))
-        self.aisi_file.write('ydet {} {}\n'.format(self.simulation_params['ydet'][0], self.simulation_params['ydet'][1]))
-        self.aisi_file.write('zdet {} {}\n'.format(self.simulation_params['zdet'][0], self.simulation_params['zdet'][1]))
-        self.aisi_file.write('gslqagabserr {}\n'.format(self.simulation_params['gslqagabserr']))
-        self.aisi_file.write('gslqagrelerr {}\n'.format(self.simulation_params['gslqagrelerr']))
-        self.aisi_file.write('gslkinodeabserr {}\n'.format(self.simulation_params['gslkinodeabserr']))
-        self.aisi_file.write('gslkinoderelerr {}\n'.format(self.simulation_params['gslkinoderelerr']))
-        self.aisi_file.write('gslpulseodeabserr {}\n'.format(self.simulation_params['gslpulseodeabserr']))
-        self.aisi_file.write('gslpulseoderelerr {}\n'.format(self.simulation_params['gslpulseoderelerr']))
-        self.aisi_file.write('\n\n')
+        f.write(f'ignoredetuning {s["ignoredetuning"]}\n')
+        f.write(f'seed {s["seed"]}\n')
+        f.write(f'usedetvolselection {s["usedetvolselection"]}\n')
+        f.write(f'xdet {s["xdet"][0]} {s["xdet"][1]}\n')
+        f.write(f'ydet {s["ydet"][0]} {s["ydet"][1]}\n')
+        f.write(f'zdet {s["zdet"][0]} {s["zdet"][1]}\n')
+        f.write(f'gslqagabserr {s["gslqagabserr"]}\n')
+        f.write(f'gslqagrelerr {s["gslqagrelerr"]}\n')
+        f.write(f'gslkinodeabserr {s["gslkinodeabserr"]}\n')
+        f.write(f'gslkinoderelerr {s["gslkinoderelerr"]}\n')
+        f.write(f'gslpulseodeabserr {s["gslpulseodeabserr"]}\n')
+        f.write(f'gslpulseoderelerr {s["gslpulseoderelerr"]}\n\n')
 
     def _write_sequence_params(self):
         self.aisi_file.write('# Sequence parameters\n')
@@ -179,369 +170,43 @@ class AISFlow():
         
         else:
             raise ValueError("Sequence Name unknown")
+        
+    def _build_paths_to_simulate(self, L, n):
+        # the opening and closing sequences are always the same
+        upper_start = [0] + [1 if i%2==0 else 0 for i in range(n)]
+        lower_start = [0] + [0]*n
+        upper_finish = [0 if i%2==0 else 1 for i in range(n-1)] # upper is here defined as the last arm to be excited (does not necessarily correspond to the real upper arm)
+        lower_finish = [0]*(n-1)
 
-    def _build_accel_pulses(self,
-    t0_start,          # block start time
-    vz0,               # initial vertical velocity (z)
-    nkicks,            # number of π pulses in this block
-    dt_pi,             # π-pulse duration
-    dt_lmt,            # LMT spacing between π pulses
-    recoil_sum,        # cumulative recoil (m/s) entering the block (for that arm)
-    sign_seq,          # list of +1 / -1 of length nkicks, pulse direction per kick
-    e_to_g_seq=None    # list of booleans (len nkicks); if None -> all False
-    ):
-        """
-        Build an acceleration (LMT) block: start/end times and per-pulse (kz, omega),
-        updating the recoil sum exactly like the original ultranarrow MZ code.
+        # the diamonds consist of two types of sequences which alternate
+        g_to_e = [0]*(n-1) + [1 if i%2==0 else 0 for i in range(n)]
+        e_to_g = [0 if i%2==0 else 1 for i in range(n-1)] + [0]*n
 
-        Returns:
-            dict with keys: 't0','t1','kz','omega','sign','recoil_sum'
-        """
-        if e_to_g_seq is None:
-            e_to_g_seq = [False] * nkicks
-        assert len(sign_seq) == nkicks
-        assert len(e_to_g_seq) == nkicks
+        # build the sequences
+        upper_path = upper_start
+        lower_path = lower_start
 
-        start_times, end_times = [], []
-        kz_vals, omega_vals, signs = [], [], []
-
-        for i in range(nkicks):
-            # Pulse timing
-            t_i = t0_start + i * (dt_pi + dt_lmt)
-            start_times.append(t_i)
-            end_times.append(t_i + dt_pi)
-
-            # Classical + recoil velocity at pulse i
-            v_t = vz0 - g * t_i
-            v_tot = v_t + recoil_sum
-
-            # Direction & detuning branch as in your current code
-            s = sign_seq[i]
-            is_e_to_g = e_to_g_seq[i]
-
-            if s == +1:
-                omega_i = detuning(v_tot, is_e_to_g)
-                kz_i = omega_i / c
-                # emit +kz
-                kz_vals.append(kz_i)
-                omega_vals.append(omega_i)
-                # update recoil by +ħ kz_i / m
-                recoil_sum += hbar * kz_i / m
-            else:  # s == -1
-                omega_i = detuning(-v_tot, is_e_to_g)
-                kz_i = omega_i / c
-                # emit -kz_i (note: update recoil with +ħ*kz_i/m, same as your code)
-                kz_vals.append(-kz_i)
-                omega_vals.append(omega_i)
-                recoil_sum += hbar * kz_i / m
-
-            signs.append(s)
-
-        return {
-            't0': start_times,
-            't1': end_times,
-            'kz': kz_vals,
-            'omega': omega_vals,
-            'sign': signs,
-            'recoil_sum': recoil_sum
-        }
-
-    def _build_decel_pulses(
-    self,
-    t0_start,        # block start time (already includes any dead time T)
-    vz0,             # initial vertical (z) velocity
-    nkicks,          # number of π pulses in this block
-    dt_pi,           # π duration
-    dt_lmt,          # LMT spacing between π pulses
-    recoil_sum,      # cumulative recoil (m/s) entering this block (same arm)
-    sign_seq,        # list of +1/-1 of length nkicks (laser direction per kick)
-    e_to_g_seq=None, # list[bool] length nkicks; if None => all False
-    use_global_k_for_up=True  # reproduce original block-2 behavior exactly
-    ):
-        """
-        Build a *deceleration* LMT block (your block 2):
-        - timings: t_i = t0_start + i*(dt_pi + dt_lmt)
-        - detuning branch identical to your code
-        - recoil update matches your original:
-            if sign==+1: recoil_sum -= ħ * (kz if use_global_k_for_up else kz_i) / m
-            if sign==-1: recoil_sum -= ħ * kz_i / m
-        Returns:
-            dict: 'kz','omega','sign','recoil_sum' (times are implied by t0_start/durations)
-        """
-        if e_to_g_seq is None:
-            e_to_g_seq = [False] * nkicks
-        assert len(sign_seq) == nkicks
-        assert len(e_to_g_seq) == nkicks
-
-        kz_vals, omega_vals, signs = [], [], []
-
-        for i in range(nkicks):
-            t_i = t0_start + i * (dt_pi + dt_lmt)
-
-            # classical + current-recoil velocity for this arm
-            v_t = vz0 - g * t_i
-            vtot = v_t + recoil_sum
-
-            s = sign_seq[i]
-            is_e_to_g = e_to_g_seq[i]
-
-            if s == +1:
-                # same detuning branch as acceleration, but recoil UPDATE is negative (decelerate)
-                omega_i = detuning(vtot, is_e_to_g)
-                kz_i = omega_i / c
-                kz_vals.append(kz_i)   # emit +kz_i
-                omega_vals.append(omega_i)
-
-                # IMPORTANT: match your original block-2 code exactly:
-                #    sum_recoil_upper -= ħ * kz / m   (uses global detuning-less kz)
-                # If you want fully consistent detuned recoil in the future, set use_global_k_for_up=False.
-                if use_global_k_for_up:
-                    recoil_sum -= hbar * kz / m
-                else:
-                    recoil_sum -= hbar * kz_i / m
+        for loop in range(L):
+            if loop%2==0:
+                upper_path += e_to_g
+                lower_path += g_to_e
             else:
-                # s == -1: use opposite velocity in detuning; emit -kz_i; subtract detuned recoil
-                omega_i = detuning(-vtot, is_e_to_g)
-                kz_i = omega_i / c
-                kz_vals.append(-kz_i)
-                omega_vals.append(omega_i)
-                recoil_sum -= hbar * kz_i / m
+                upper_path += g_to_e
+                lower_path += e_to_g
 
-            signs.append(s)
-
-        return {
-            "kz": kz_vals,
-            "omega": omega_vals,
-            "sign": signs,
-            "recoil_sum": recoil_sum,
-        }
-
-
-    def _write_auto_stepwise_detuning_ultranarrow_MZ(self):
-        # --- unpack & preliminaries (unchanged) ---
-        v0 = self.cloud_params['v0'][2]
-        n = self.sequence_params['lmt_order']
-        omega_chirp = 0
-        kchirp = 0
-
-        dt_bs = pi / (2 * self.pulse_params['rabi_freq'])
-        dt_lmt = self.sequence_params['dt_lmt']
-        pulse_duration = np.pi / (self.pulse_params['rabi_freq'])
-        dt_acc = dt_lmt + pulse_duration
-        if n == 1:
-            dt_acc = mp.inf
-
-        z0 = self.cloud_params['x0'][2]
-        t_init = self.sequence_params['t_init']
-        lmt_order = self.sequence_params['lmt_order']
-        T = self.sequence_params['interrogation_time']
-        rabi_freq = self.pulse_params['rabi_freq']
-        wtype = self.pulse_params['wtype']
-        phi0 = self.pulse_params['phi0']
-        kx_psr = self.pulse_params['kx_psr']
-        ky_psr = self.pulse_params['ky_psr']
-        beam_radius = self.pulse_params['beam_radius']
-        baseline = self.pulse_params['baseline']
-        zernike_params = self.pulse_params['zernike_params']
-
-        if lmt_order == 1:
-            assert dt_lmt == 0
+        # now, append the finish sequence depending on which arm was last excited
+        if L%2==1:
+            lower_path += upper_finish
+            upper_path += lower_finish
         else:
-            assert dt_lmt > 0
+            lower_path += lower_finish
+            upper_path += upper_finish
 
-        dt1 = dt_lmt
-        dt2 = dt_lmt
-        dt3 = dt_lmt
-        dt4 = dt_lmt
+        # create strings
+        lower_path_str = "".join([str(s) for s in lower_path])
+        upper_path_str = "".join([str(s) for s in upper_path])
 
-        assert lmt_order % 2 == 1
-        nlmt = int((lmt_order - 1))  # number of π pulses per LMT block
-
-        # --- timing (unchanged structure) ---
-        dt_bs = pi / (2 * rabi_freq)
-        dt_pi = pi / (rabi_freq)
-        T = T - 2 * (n - 1) * (dt_lmt + dt_pi)
-
-        lmt_pulse_index = np.arange(0, nlmt + 1)
-        t_start_shifted = lmt_pulse_index * (dt_pi + dt_lmt)
-        t_end_shifted = t_start_shifted + dt_pi
-        t_tot = t_end_shifted[-1] if nlmt > 1 else mp.mpf('0')
-
-        t_bs1 = t_init
-        t0 = dt_bs + t_init + dt1                   # start block 1 (accel upper arm)
-        t1 = t0 + t_tot + T                         # start block 2 (decel upper arm) — dead time T included
-        t_pi_t = t1 + t_tot + dt2                   # central mirror π
-        t2 = t_pi_t + dt_pi + dt3                   # start block 3 (accel lower arm)
-        t3 = t2 + t_tot + T                         # start block 4 (decel lower arm)
-        t_bs2 = t3 + t_tot + dt4                    # final BS
-
-        # --- build start/end times exactly as before ---
-        start_times, end_times = [], []
-        # initial π/2
-        start_times.append(t_bs1); end_times.append(t_bs1 + dt_bs)
-        # block 1
-        for i in range(nlmt):
-            start_times.append(t0 + t_start_shifted[i])
-            end_times.append(t0 + t_end_shifted[i])
-        # block 2
-        for i in range(nlmt):
-            start_times.append(t1 + t_start_shifted[i])
-            end_times.append(t1 + t_end_shifted[i])
-        # mirror
-        start_times.append(t_pi_t); end_times.append(t_pi_t + dt_pi)
-        # block 3
-        for i in range(nlmt):
-            start_times.append(t2 + t_start_shifted[i])
-            end_times.append(t2 + t_end_shifted[i])
-        # block 4
-        for i in range(nlmt):
-            start_times.append(t3 + t_start_shifted[i])
-            end_times.append(t3 + t_end_shifted[i])
-        # final π/2
-        start_times.append(t_bs2); end_times.append(t_bs2 + dt_bs)
-
-        # --- directions and transitions (unchanged) ---
-        sign = []
-        for i in range(n):          # block 1 (+ initial BS counted separately in detuning arrays)
-            sign.append((-1) ** i)
-        for i in range(2 * n - 1):  # block 2 + mirror index
-            sign.append((-1) ** i)
-        for i in range(n):          # block 3/4 + final BS
-            sign.append((-1) ** i)
-
-        is_e_to_g = [False] + [True, False] * (2 * n - 2) + [True] + [True, False] * (2 * n - 2) + [False]
-
-        # --- detuning arrays ---
-        kz_detuned_values = []
-        omega0_detuned_values = []
-
-        # initial π/2
-        omega_ = detuning(v0, is_e_to_g[0])
-        kz_ = omega_ / c
-        kz_detuned_values.append(kz_)
-        omega0_detuned_values.append(omega_)
-        sum_recoil_upper = hbar * kz_ / m
-        sum_recoil_lower = 0
-
-        # ---- BLOCK 1: accelerate upper arm ----
-        nk_b1 = nlmt
-        sign_b1 = [sign[i] for i in range(1, n)]            # indices 1..n-1
-        e2g_b1  = [is_e_to_g[i] for i in range(1, n)]
-        b1 = self._build_accel_pulses(
-            t0_start=t0, vz0=v0, nkicks=nk_b1,
-            dt_pi=dt_pi, dt_lmt=dt_lmt,
-            recoil_sum=sum_recoil_upper,
-            sign_seq=sign_b1, e_to_g_seq=e2g_b1
-        )
-        kz_detuned_values.extend(b1["kz"])
-        omega0_detuned_values.extend(b1["omega"])
-        sum_recoil_upper = b1["recoil_sum"]
-
-        # ---- BLOCK 2: decelerate upper arm ----
-        nk_b2 = nlmt
-        sign_b2 = [sign[i] for i in range(n, 2 * n - 1)]    # indices n..2n-2
-        e2g_b2  = [is_e_to_g[i] for i in range(n, 2 * n - 1)]
-        b2 = self._build_decel_pulses(
-            t0_start=t1, vz0=v0, nkicks=nk_b2,
-            dt_pi=dt_pi, dt_lmt=dt_lmt,
-            recoil_sum=sum_recoil_upper,
-            sign_seq=sign_b2, e_to_g_seq=e2g_b2,
-            use_global_k_for_up=True  # preserve exact original behavior
-        )
-        kz_detuned_values.extend(b2["kz"])
-        omega0_detuned_values.extend(b2["omega"])
-        sum_recoil_upper = b2["recoil_sum"]
-
-        # ---- MIRROR pulse (index 2n-1) ----
-        i_mirror = 2 * n - 1
-        t0i = start_times[i_mirror]
-        v_t = v0 - g * t0i
-        # original code used last block-2 detuned kz magnitude for recoil here:
-        last_kz_mag_b2 = abs(b2["kz"][-1]) if len(b2["kz"]) > 0 else abs(kz_detuned_values[-1])
-        v_recoil = hbar * last_kz_mag_b2 / m
-        vtot = v_t + v_recoil
-        omega_ = detuning(vtot, is_e_to_g[i_mirror])
-        kz_ = omega_ / c
-        kz_detuned_values.append(kz_)
-        omega0_detuned_values.append(omega_)
-        sum_recoil_lower = hbar * kz_ / m
-
-        # ---- BLOCK 3: accelerate lower arm (note: not is_e_to_g) ----
-        nk_b3 = nlmt
-        sign_b3 = [sign[i] for i in range(2 * n, 3 * n - 1)]   # indices 2n..3n-2
-        e2g_b3  = [not is_e_to_g[i] for i in range(2 * n, 3 * n - 1)]
-        b3 = self._build_accel_pulses(
-            t0_start=t2, vz0=v0, nkicks=nk_b3,
-            dt_pi=dt_pi, dt_lmt=dt_lmt,
-            recoil_sum=sum_recoil_lower,
-            sign_seq=sign_b3, e_to_g_seq=e2g_b3
-        )
-        kz_detuned_values.extend(b3["kz"])
-        omega0_detuned_values.extend(b3["omega"])
-        sum_recoil_lower = b3["recoil_sum"]
-
-        # ---- BLOCK 4: decelerate lower arm (note: not is_e_to_g) ----
-        nk_b4 = nlmt
-        sign_b4 = [sign[i] for i in range(3 * n - 1, 4 * n - 2)]   # indices 3n-1..4n-3
-        e2g_b4  = [not is_e_to_g[i] for i in range(3 * n - 1, 4 * n - 2)]
-        b4 = self._build_decel_pulses(
-            t0_start=t3, vz0=v0, nkicks=nk_b4,
-            dt_pi=dt_pi, dt_lmt=dt_lmt,
-            recoil_sum=sum_recoil_lower,
-            sign_seq=sign_b4, e_to_g_seq=e2g_b4,
-            use_global_k_for_up=False  # original block-4 subtracts detuned kz_i for both signs
-        )
-        kz_detuned_values.extend(b4["kz"])
-        omega0_detuned_values.extend(b4["omega"])
-        sum_recoil_lower = b4["recoil_sum"]
-
-        # ---- final beam splitter ----
-        t0i = start_times[-1]
-        v_t = v0 - g * t0i
-        vtot = v_t
-        omega_ = detuning(vtot, is_e_to_g[-1])
-        kz_ = omega_ / c
-        kz_detuned_values.append(kz_)
-        omega0_detuned_values.append(omega_)
-
-        # ---- transverse components and output (unchanged) ----
-        kx = np.zeros(3 + 4 * nlmt)
-        ky = np.zeros(3 + 4 * nlmt)
-        kx[-1] = kx_psr
-        ky[-1] = ky_psr
-
-        self.aisi_file.write("# Pulse parameters\n")
-        self.aisi_file.write("t0 " + " ".join(str(t) for t in start_times) + "\n")
-        self.aisi_file.write("t1 " + " ".join(str(t) for t in end_times) + "\n")
-        self.aisi_file.write("kx " + " ".join(str(x) for x in kx) + "\n")
-        self.aisi_file.write("ky " + " ".join(str(y) for y in ky) + "\n")
-        self.aisi_file.write("kz " + " ".join(str(k) for k in kz_detuned_values[:(3 + 4 * nlmt)]) + "\n")
-        self.aisi_file.write("omega " + " ".join(str(w) for w in omega0_detuned_values[:(3 + 4 * nlmt)]) + "\n")
-        self.aisi_file.write("rabifreq " + " ".join(str(rabi_freq / (2 * pi)) for _ in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("wtype " + " ".join(wtype for _ in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("phi0 " + " ".join(str(phi0) if i == 2 + 4 * nlmt else "0" for i in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("kxchirp " + " ".join("0" for _ in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("kychirp " + " ".join("0" for _ in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("kzchirp " + " ".join(str(-sign[i] * kchirp) for i in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("frequencychirp " + " ".join(str(-sign[i] * omega_chirp) for i in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("waist " + " ".join(str(self.pulse_params['waist']) for _ in range(3 + 4 * nlmt)) + "\n")
-        # NOTE: original wrote focallength for 4+4*nlmt; keep that quirk intact:
-        self.aisi_file.write("focallength " + " ".join(str(self.pulse_params['focallength']) for _ in range(4 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("zlaser " + " ".join(str(self.pulse_params['zupwardlaser']) if sign[i] == 1 else str(self.pulse_params['zdownwardlaser']) for i in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("beamradius " + " ".join(str(beam_radius) for _ in range(3 + 4 * nlmt)) + "\n")
-        self.aisi_file.write("baseline " + " ".join(str(baseline) for _ in range(3 + 4 * nlmt)) + "\n")
-
-        for zernike_noll_index in zernike_params.keys():
-            self.aisi_file.write(f"zernikecoeff_{zernike_noll_index} ")
-            for i in range(0, int(1 + (lmt_order - 1) / 2)):
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][0] if sign[i] == 1 else zernike_params[zernike_noll_index][3]) + " ")
-            for i in range(lmt_order):
-                s = sign[i + int(1 + (lmt_order - 1) / 2)]
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][1] if s == 1 else zernike_params[zernike_noll_index][4]) + " ")
-            for i in range(int(1 + (lmt_order - 1) / 2)):
-                s = sign[i + int(1 + (lmt_order - 1) / 2) + lmt_order]
-                self.aisi_file.write(str(zernike_params[zernike_noll_index][2] if s == 1 else zernike_params[zernike_noll_index][5]) + " ")
-            self.aisi_file.write("\n")
+        return [lower_path_str+"0", lower_path_str+"1", upper_path_str+"0", upper_path_str+"1"]
 
     def _make_palindrome(self, base, include_center_twice=False):
         # base = [T1, ..., TL]
@@ -576,22 +241,10 @@ class AISFlow():
         ky_psr    = self.pulse_params['ky_psr']
         beam_radius = self.pulse_params['beam_radius']
         baseline    = self.pulse_params['baseline']
-        zernike_params = self.pulse_params['zernike_params']
 
         # timing constants (match your single-loop conventions)
         dt_bs = pi / (2 * rabi_freq)
         dt_pi = pi / (    rabi_freq)
-
-        # same per-block local spacings as your ultranarrow MZ
-        dt1 = dt_lmt; dt2 = dt_lmt; dt3 = dt_lmt; dt4 = dt_lmt
-
-        # LMT block internal span (sum of π + gaps between them)
-        if nlmt > 1:
-            t_tot = (np.arange(0, nlmt+1) * (dt_pi + dt_lmt))[-1] + dt_pi
-        elif nlmt == 1:
-            t_tot = dt_pi
-        else:
-            t_tot = mp.mpf('0')
 
         # build symmetric interrogation list
         ndiamonds=L
@@ -610,69 +263,146 @@ class AISFlow():
         # ----- compute the effective interrogation times
         for i in range(len(T_full)):
             T_full[i] = T_full[i] - 2*(n-1)*(dt_lmt + dt_pi)
+            assert T_full[i] > 0, "Interrogation time too short for LMT blocks"
 
         # ----- pulse arrays
         start_times, end_times = [], []
         kz_vals, omega_vals    = [], []
 
+        # compute the signs
+        lmt_order = self.sequence_params["lmt_order"]
+        loopnumber = self.sequence_params["loopnumber"]
+        signs = [1 if i%2==0 else -1 for i in range(lmt_order)]
+        signs += [1 if i%2==0 else -1 for i in range(2*lmt_order-1)] * loopnumber
+        signs += [1 if i%2==0 else -1 for i in range(lmt_order)]
+
+        # compute the e->g flags
+        is_e_to_g = [False if i%2==0 else True for i in range(lmt_order)]
+        for loop in range(loopnumber):
+            is_e_to_g += [True if i%2==0 else False for i in range(lmt_order-1)]
+            is_e_to_g += [False]
+            is_e_to_g += [True if i%2==0 else False for i in range(lmt_order-1)]
+        is_e_to_g += [True if i%2==0 else False for i in range(lmt_order-1)]
+        is_e_to_g += [False]
+
         # ---- helpers (local) ----
 
-        def _block_signs(start_sign, nkicks):
-            # alternate +1, -1, +1, ... starting from start_sign
-            return [start_sign * ((-1) ** k) for k in range(nkicks)]
-
-        def _block_e2g(nkicks, flip=False):
-            # matches your pattern: starts True and alternates per kick
-            seq = [(k % 2 == 0) for k in range(nkicks)]
-            return [ (not x) if flip else x for x in seq ]
-
-        def _emit_block_times(t0_start, nkicks):
-            t0s = [t0_start + k * (dt_pi + dt_lmt) for k in range(nkicks)]
+        def _emit_mirror_block_times(t0_start, lmt_order):
+            t0s = [t0_start + k * (dt_pi + dt_lmt) for k in range(2*lmt_order-1)]
             t1s = [t + dt_pi for t in t0s]
             start_times.extend(t0s); end_times.extend(t1s)
 
-        def _accel_block(t0_start, vz0, recoil_sum, start_sign, e2g_flip=False):
-            signs = _block_signs(start_sign, nlmt)
-            e2g   = _block_e2g(nlmt, flip=e2g_flip)
-            _emit_block_times(t0_start, nlmt)
-            local_kz, local_om = [], []
-            for k in range(nlmt):
-                t_i   = t0_start + k * (dt_pi + dt_lmt)
-                v_t   = vz0 - g * t_i
-                v_tot = v_t + recoil_sum
-                s     = signs[k]
-                is_e  = e2g[k]
-                if s == +1:
-                    om = detuning(v_tot, is_e); kz_i = om / c
-                    local_kz.append(kz_i);  local_om.append(om)
-                    recoil_sum += hbar * kz_i / m
-                else:
-                    om = detuning(-v_tot, is_e); kz_i = om / c
-                    local_kz.append(-kz_i); local_om.append(om)
-                    recoil_sum += hbar * kz_i / m
-            return recoil_sum, local_kz, local_om
+        def _emit_init_block_times(t0_start, lmt_order):
+            t0s = [t0_start + k * (dt_pi + dt_lmt) for k in range(lmt_order-1)]
+            t1s = [t + dt_pi for t in t0s]
+            start_times.extend(t0s); end_times.extend(t1s)
 
-        def _decel_block(t0_start, vz0, recoil_sum, start_sign, e2g_flip=False, use_global_k_for_up=False):
+        def _emit_final_block_times(t0_start, lmt_order):
+            _emit_init_block_times(t0_start, lmt_order)
+
+        def _mirror_block(t0_start, vz0):
             # use_global_k_for_up=True reproduces your block-2: subtract ħ*kz/m for s=+1
-            signs = _block_signs(start_sign, nlmt)
-            e2g   = _block_e2g(nlmt, flip=e2g_flip)
-            _emit_block_times(t0_start, nlmt)
+            _emit_mirror_block_times(t0_start, lmt_order)
             local_kz, local_om = [], []
-            for k in range(nlmt):
-                t_i   = t0_start + k * (dt_pi + dt_lmt)
-                v_t   = vz0 - g * t_i
-                v_tot = v_t + recoil_sum
+
+            # compute the signs and e2g tags
+            signs = [1 if i%2==0 else -1 for i in range(2*lmt_order-1)]
+            e2g   = [True if i%2==0 else False for i in range(lmt_order-1)]
+            e2g  += [True]
+            e2g  += [True if i%2==0 else False for i in range(lmt_order-1)]
+            # debug prints
+            #print("Mirror")
+            #print(signs)
+            #print(e2g)
+            recoil_sum = lmt_order*hbar*kz/m
+            for k in range(2*lmt_order-1):
+                t_i   = k * (dt_pi + dt_lmt)
+                v_t   = vz0 - g * t_i # v_COM
                 s     = signs[k]
                 is_e  = e2g[k]
+
+                v_tot = v_t + recoil_sum
+                
+                if k <= lmt_order-2:
+                    # adressing upper arm, being decelerated
+                    recoil_sum -= hbar*kz/m
+                elif k == lmt_order-1:
+                    recoil_sum = hbar*kz/m
+                else:
+                    recoil_sum += hbar*kz/m
+
                 if s == +1:
                     om = detuning(v_tot, is_e); kz_i = om / c
-                    local_kz.append(kz_i);  local_om.append(om)
-                    recoil_sum -= hbar * (kz if use_global_k_for_up else kz_i) / m
+                    local_kz.append(kz);  local_om.append(om)
                 else:
                     om = detuning(-v_tot, is_e); kz_i = om / c
-                    local_kz.append(-kz_i); local_om.append(om)
-                    recoil_sum -= hbar * kz_i / m
-            return recoil_sum, local_kz, local_om
+                    local_kz.append(-kz); local_om.append(om)
+
+            return local_kz, local_om
+        
+        def _init_block(t0_start, vz0):
+            # after the pi/2 pulse
+            _emit_init_block_times(t0_start, lmt_order)
+            local_kz, local_om = [], []
+
+            signs = [-1 if i%2==0 else 1 for i in range(lmt_order-1)]
+            e2g   = [True if i%2==0 else False for i in range(lmt_order-1)]
+            # debug prints
+            #print("init")
+            #print(signs)
+            #print(e2g)
+
+            recoil_sum = hbar*kz/m
+            for k in range(lmt_order-1):
+                t_i   = k * (dt_pi + dt_lmt)
+                v_t   = vz0 - g * t_i # v_COM
+                s     = signs[k]
+                is_e  = e2g[k]
+
+                v_tot = v_t + recoil_sum
+
+                recoil_sum += hbar*kz/m
+
+                if s == +1:
+                    om = detuning(v_tot, is_e); kz_i = om / c
+                    local_kz.append(kz);  local_om.append(om)
+                else:
+                    om = detuning(-v_tot, is_e); kz_i = om / c
+                    local_kz.append(-kz); local_om.append(om)
+            return local_kz, local_om
+        
+        def _final_block(t0_start, vz0):
+            # after the pi/2 pulse
+            _emit_final_block_times(t0_start, lmt_order)
+            local_kz, local_om = [], []
+
+            signs = [1 if i%2==0 else -1 for i in range(lmt_order-1)]
+            e2g   = [True if i%2==0 else False for i in range(lmt_order-1)]
+            # debug prints
+            #print("final")
+            #print(signs)
+            #print(e2g)
+
+            recoil_sum = lmt_order*hbar*kz/m 
+            for k in range(lmt_order-1):
+                t_i   = k * (dt_pi + dt_lmt)
+                v_t   = vz0 - g * t_i # v_COM
+                s     = signs[k]
+                is_e  = e2g[k]
+
+                v_tot = v_t + recoil_sum
+                # debug prints
+                #print("vtot = ", v_tot)
+
+                recoil_sum -= hbar*kz/m
+
+                if s == +1:
+                    om = detuning(v_tot, is_e); kz_i = om / c
+                    local_kz.append(kz);  local_om.append(om)
+                else:
+                    om = detuning(-v_tot, is_e); kz_i = om / c
+                    local_kz.append(-kz); local_om.append(om)
+            return local_kz, local_om
 
         # ---- time cursor and beam-splitters
         t = self.sequence_params['t_init']
@@ -681,54 +411,37 @@ class AISFlow():
         # detuning for initial π/2 (as before)
         om = detuning(v0, False); kz_i = om / c
         kz_vals.append(kz_i); omega_vals.append(om)
-        sum_recoil_upper = hbar * kz_i / m
-        sum_recoil_lower = mp.mpf('0')
-        t += dt_bs
+        t += dt_bs + dt_lmt
 
-        # Per your single-loop pattern with odd n, the block start signs are:
-        #   B1: +1   (accel upper),   B2: -1   (decel upper, uses global kz for s=+1),
-        #   B3: +1   (accel lower, flip e2g),  B4: +1   (decel lower, detuned kz for both signs)
-        start_sign_B1 = -1
-        start_sign_B2 = +1              # because n is odd
-        start_sign_B3 = -1
-        start_sign_B4 = +1
+        if lmt_order != 1:
+            # initial acceleration block
+            kz_init, om_init = _init_block(t, v0 - g*t)
+            kz_vals += kz_init
+            omega_vals += om_init
+
+            t = end_times[-1] 
 
         # walk diamonds
-        for Ti in T_full:
-            # --- Block 1 (upper accel)
-            t += dt1
-            sum_recoil_upper, kz_b1, om_b1 = _accel_block(t, v0, sum_recoil_upper, start_sign_B1, e2g_flip=False)
-            kz_vals.extend(kz_b1); omega_vals.extend(om_b1)
-            t += t_tot
+        for idx,Ti in enumerate(T_full):
+            # first dead time
+            t += Ti
+            vz0 = v0-g*t
+            # mirror block
+            kz_mirror, om_mirror = _mirror_block(t, vz0)
+            kz_vals += kz_mirror
+            omega_vals += om_mirror
+            # update time
+            t = end_times[-1]
+            # second
+            t += Ti
 
-            # wait Ti, then Block 2 (upper decel)
-            t += Ti + dt2
-            sum_recoil_upper, kz_b2, om_b2 = _decel_block(t, v0, sum_recoil_upper, start_sign_B2, e2g_flip=False, use_global_k_for_up=True)
-            kz_vals.extend(kz_b2); omega_vals.extend(om_b2)
-            t += t_tot
+        if lmt_order != 1:
+            # final deceleration block
+            kz_final, om_final = _final_block(t, v0 - g*t)
+            kz_vals += kz_final
+            omega_vals += om_final
 
-            # mirror π
-            start_times.append(t); end_times.append(t + dt_pi)
-            # mirror recoil: use |last kz| from block 2 (matches your original)
-            last_kz_mag = abs(kz_b2[-1]) if len(kz_b2) else abs(kz_vals[-1])
-            v_recoil = hbar * last_kz_mag / m
-            v_t = v0 - g * t
-            om = detuning(v_t + v_recoil, True); kz_i = om / c
-            kz_vals.append(kz_i); omega_vals.append(om)
-            sum_recoil_lower = hbar * kz_i / m
-            t += dt_pi + dt3
-
-            # --- Block 3 (lower accel, flip e2g)
-            sum_recoil_lower, kz_b3, om_b3 = _accel_block(t, v0, sum_recoil_lower, start_sign_B3, e2g_flip=True)
-            kz_vals.extend(kz_b3); omega_vals.extend(om_b3)
-            t += t_tot
-
-            # wait Ti, then Block 4 (lower decel, flip e2g)
-            t += Ti + dt4
-            sum_recoil_lower, kz_b4, om_b4 = _decel_block(t, v0, sum_recoil_lower, start_sign_B4, e2g_flip=True, use_global_k_for_up=False)
-            kz_vals.extend(kz_b4); omega_vals.extend(om_b4)
-            t += t_tot
-            # next diamond continues immediately
+            t = end_times[-1] + dt_lmt
 
         # final π/2
         start_times.append(t); end_times.append(t + dt_bs)
@@ -743,32 +456,30 @@ class AISFlow():
         kx[-1] = kx_psr; ky[-1] = ky_psr
 
         self.aisi_file.write("# Pulse parameters\n")
-        self.aisi_file.write("t0 " + " ".join(str(x) for x in start_times) + "\n")
-        self.aisi_file.write("t1 " + " ".join(str(x) for x in end_times) + "\n")
-        self.aisi_file.write("kx " + " ".join(str(x) for x in kx) + "\n")
-        self.aisi_file.write("ky " + " ".join(str(y) for y in ky) + "\n")
-        self.aisi_file.write("kz " + " ".join(str(k) for k in kz_vals) + "\n")
-        self.aisi_file.write("omega " + " ".join(str(w) for w in omega_vals) + "\n")
-        self.aisi_file.write("rabifreq " + " ".join(str(rabi_freq/(2*pi)) for _ in range(N)) + "\n")
-        self.aisi_file.write("wtype " + " ".join(wtype for _ in range(N)) + "\n")
+        self.aisi_file.write("t0 " + " ".join(str(x) for x in start_times) + " \n")
+        self.aisi_file.write("t1 " + " ".join(str(x) for x in end_times) + " \n")
+        self.aisi_file.write("kx " + " ".join(str(x) for x in kx) + " \n")
+        self.aisi_file.write("ky " + " ".join(str(y) for y in ky) + " \n")
+        self.aisi_file.write("kz " + " ".join(str(k) for k in kz_vals) + " \n")
+        self.aisi_file.write("omega " + " ".join(str(w) for w in omega_vals) + " \n")
+        self.aisi_file.write("rabifreq " + " ".join(str(rabi_freq/(2*pi)) for _ in range(N)) + " \n")
+        self.aisi_file.write("wtype " + " ".join(wtype for _ in range(N)) + " \n")
         # phase on the very last pulse (keep your convention)
-        self.aisi_file.write("phi0 " + " ".join(str(phi0) if i == (N-1) else "0" for i in range(N)) + "\n")
+        self.aisi_file.write("phi0 " + " ".join(str(phi0) if i == (N-1) else "0" for i in range(N)) + " \n")
         # zero chirps here
-        self.aisi_file.write("kxchirp " + " ".join("0" for _ in range(N)) + "\n")
-        self.aisi_file.write("kychirp " + " ".join("0" for _ in range(N)) + "\n")
-        self.aisi_file.write("kzchirp " + " ".join("0" for _ in range(N)) + "\n")
+        self.aisi_file.write("kxchirp " + " ".join("0" for _ in range(N)) + " \n")
+        self.aisi_file.write("kychirp " + " ".join("0" for _ in range(N)) + " \n")
+        self.aisi_file.write("kzchirp " + " ".join("0" for _ in range(N)) + " \n")
         self.aisi_file.write("frequencychirp " + " ".join("0" for _ in range(N)) + "\n")
-        self.aisi_file.write("waist " + " ".join(str(self.pulse_params['waist']) for _ in range(N)) + "\n")
-        self.aisi_file.write("focallength " + " ".join(str(self.pulse_params['focallength']) for _ in range(N)) + "\n")
+        self.aisi_file.write("waist " + " ".join(str(self.pulse_params['waist']) for _ in range(N)) + " \n")
+        self.aisi_file.write("focallength " + " ".join(str(self.pulse_params['focallength']) for _ in range(N)) + " \n")
         # z-laser per sign (we can infer from kz sign we emitted):
-        self.aisi_file.write("zlaser " + " ".join(
-            str(self.pulse_params['zupwardlaser']) if (mp.sign(kz_vals[i]) >= 0) else str(self.pulse_params['zdownwardlaser'])
-            for i in range(N)
-        ) + "\n")
-        self.aisi_file.write("beamradius " + " ".join(str(beam_radius) for _ in range(N)) + "\n")
-        self.aisi_file.write("baseline " + " ".join(str(baseline) for _ in range(N)) + "\n")
+        self.aisi_file.write("zlaser " + " ".join(["0"]*(N)) + "\n")
+        self.aisi_file.write("beamradius " + " ".join(str(beam_radius) for _ in range(N)) + " \n")
+        self.aisi_file.write("baseline " + " ".join(str(baseline) for _ in range(N)) + " \n")
 
         # Zernike (reuse your 3-block grouping per diamond; here we emit a simple per-pulse up/down split)
+        '''
         for zidx in zernike_params.keys():
             c1_up, c2_up, c3_up, c1_dn, c2_dn, c3_dn = zernike_params[zidx]
             # Map by segment within each diamond; to keep this concise, emit c2_up/dn for all LMT π and c1 for BS/mirror:
@@ -786,8 +497,7 @@ class AISFlow():
                 else:
                     out.append("0")
             self.aisi_file.write(f"zernikecoeff_{zidx} " + " ".join(out) + "\n")
-
-
+        '''
 
     def _write_chirped_sequence_ultranarrow_MZ(self):
         # get the initial vertical velocity
@@ -945,8 +655,6 @@ class AISFlow():
         sign.append(1) # mirror pulse (lower)
         for i in range(0,nlmt+1):
             sign.append((-1)**(3*nlmt+i))
-
-        print(sign)
 
         # compute the kz and omega values for each block
         kz_detuned_values = []
