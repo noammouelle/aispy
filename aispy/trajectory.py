@@ -69,7 +69,7 @@ def load_trajectory(fname):
 # ── Reconstruction ────────────────────────────────────────────────────────────
 
 def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
-                              n_interp=200):
+                              n_interp=200, min_interp_dt=0.005):
     """
     Reconstruct smooth (t, x, y, z) curves from snapshot data.
 
@@ -77,12 +77,24 @@ def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
     is obtained by evaluating the analytic free-flight equation at *n_interp*
     intermediate times.  For ``linear_pot`` this is exact.
 
+    Interpolation is only applied when the time gap between snapshots exceeds
+    *min_interp_dt* (default 5 ms).  This means:
+
+    - **Free-flight intervals** (gap ~ T ~ seconds): interpolated with
+      ``n_interp`` points → smooth parabolic arcs.
+    - **LMT pulse intervals** (gap ~ 0.5 ms): not interpolated — the dense
+      snapshot data is already sufficient to show the LMT structure.
+
+    This avoids generating millions of redundant points for large-n runs
+    while still rendering smooth free-flight segments.
+
     Parameters
     ----------
-    traj       : dict — output of :func:`load_trajectory`
-    atom_idx   : int  — which atom to reconstruct (default 0)
-    potential  : str  — ``'linear_pot'`` (uniform gravity) or ``'zero_pot'``
-    n_interp   : int  — points per free-flight segment (default 200)
+    traj           : dict — output of :func:`load_trajectory`
+    atom_idx       : int  — which atom to reconstruct (default 0)
+    potential      : str  — ``'linear_pot'`` (uniform gravity) or ``'zero_pot'``
+    n_interp       : int  — interpolation points per free-flight segment (default 200)
+    min_interp_dt  : float — minimum interval [s] to trigger interpolation (default 5 ms)
 
     Returns
     -------
@@ -134,11 +146,13 @@ def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
             t_out.append(t0)
             x_out.append(p0[0]); y_out.append(p0[1]); z_out.append(p0[2])
 
-            # If there is a next snapshot for this path, interpolate
+            # If there is a next snapshot for this path, interpolate when
+            # the interval is long enough (free-flight) but skip for short
+            # LMT-pulse intervals where snapshots are already dense.
             if i < len(sn) - 1:
                 t1 = snap_times[sn[i + 1]]
                 dt = t1 - t0
-                if dt > 1e-9:
+                if dt > min_interp_dt and n_interp > 0:
                     t_mid = np.linspace(t0, t1, n_interp + 2)[1:-1]
                     xm, ym, zm = free_flight(p0, v0, t0, t_mid)
                     t_out.extend(t_mid.tolist())
