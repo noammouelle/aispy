@@ -4,3 +4,4 @@ setuptools
 pandas
 h5py
 mpmath
+scipy
