@@ -80,6 +80,14 @@ class AISFlow():
 
     def _write_cloud_params(self):
         self.aisi_file.write('# Cloud parameters\n')
+        initmode = self.cloud_params.get('initmode', 'gaussian')
+        if initmode == 'psgrid':
+            self.aisi_file.write('initmode psgrid\n')
+            for axis in ('x', 'y', 'z', 'vx', 'vy', 'vz'):
+                lo, hi, n = self.cloud_params[f'{axis}grid']
+                self.aisi_file.write(f'{axis}grid {lo} {hi} {n}\n')
+        # Gaussian params are always written — the ais++ parser requires them
+        # even in psgrid mode (they are ignored in that mode).
         self.aisi_file.write('natoms {}\n'.format(self.cloud_params['natoms']))
         self.aisi_file.write('initialstate {}\n'.format(self.cloud_params['initialstate']))
         self.aisi_file.write('sigma {}\n'.format(self.cloud_params['sigma']))
