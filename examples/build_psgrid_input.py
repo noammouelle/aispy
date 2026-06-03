@@ -43,8 +43,8 @@ from aispy.utils import AISFlow, pi, hbar, kz
 # ── fixed interferometer parameters (match PSR_EXAMPLE_NLMT1.aisi) ───────────
 T_INTERROG     = mp.mpf('2.225')           # s
 RABI_FREQ      = 2 * pi * mp.mpf('1e3')   # rad/s
-DT_LMT         = mp.mpf('0.0')            # s  (n=1: no LMT sub-pulses)
-DETECTION_TIME = 2 * T_INTERROG + mp.mpf('0.001')
+DT_LMT         = mp.mpf('1e-7')            # s  (n=1: no LMT sub-pulses)
+DETECTION_TIME = 2 * T_INTERROG + mp.mpf('0.01')
 BEAM_WAIST     = mp.mpf('0.01000319328186729550325188260259019')  # m
 BEAM_RADIUS    = mp.mpf('0.01')           # m
 BASELINE       = mp.mpf('10')             # m
@@ -90,7 +90,7 @@ def build_param_dict(xgrid, ygrid, zgrid, vxgrid, vygrid, vzgrid,
             't_init':             mp.mpf('0.0'),
             'detectiontime':      DETECTION_TIME,
             'interrogation_time': [T_INTERROG],
-            'lmt_order':          1,        # n=1: simple MZ, no LMT blocks
+            'lmt_order':          1001,        # n=1: simple MZ, no LMT blocks
             'dt_lmt':             DT_LMT,
             'automaticdetuning':  1,
             'frequencychirp':     0,
@@ -116,7 +116,7 @@ def build_param_dict(xgrid, ygrid, zgrid, vxgrid, vygrid, vzgrid,
         },
         'simulation_params': {
             'amplitudethreshold': 0,
-            'coherencelength':    float(3.740463112189228e-06),
+            'coherencelength':    float(1e-1),
             'usemcbranching':     0,
             'ignoredetuning':     0,
             'usestaticapprox':    0,
@@ -148,9 +148,9 @@ def main():
                    help='grid points in x0 (default: 25)')
     p.add_argument('--nvx',            type=int,   default=25,
                    help='grid points in vx0 (default: 25)')
-    p.add_argument('--sigma_x',        type=float, default=3.0,
+    p.add_argument('--sigma_x',        type=float, default=10.0,
                    help='half-width in units of cloud σ_x (default: 3)')
-    p.add_argument('--sigma_vx',       type=float, default=3.0,
+    p.add_argument('--sigma_vx',       type=float, default=10.0,
                    help='half-width in units of cloud σ_vx (default: 3)')
     p.add_argument('--cloud_sigma_x_m', type=float, default=100e-6,
                    help='cloud 1σ position spread [m] (default: 100e-6)')

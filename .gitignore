@@ -2,3 +2,4 @@ AISPY.egg-info
 build
 tests.ipynb
 examples/output-files/*
+examples/input-files/*
