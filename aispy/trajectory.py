@@ -68,41 +68,72 @@ def load_trajectory(fname):
 
 # ── Reconstruction ────────────────────────────────────────────────────────────
 
+def _arm_key(path):
+    """
+    Return a stable arm identifier from a (possibly growing) path string.
+    'init'   — before the first beamsplitter (path length <= 1)
+    'lower'  — path[1] == '0' (lower arm throughout LMT sequence)
+    'upper'  — path[1] == '1' (upper arm throughout LMT sequence)
+    """
+    if len(path) <= 1:
+        return 'init'
+    return 'lower' if path[1] == '0' else 'upper'
+
+
 def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
-                              n_interp=200, min_interp_dt=0.005):
+                              n_interp=200, min_interp_dt=0.005,
+                              arm_grouping='auto'):
     """
     Reconstruct smooth (t, x, y, z) curves from snapshot data.
 
-    Between consecutive snapshots where the same path exists, the trajectory
-    is obtained by evaluating the analytic free-flight equation at *n_interp*
-    intermediate times.  For ``linear_pot`` this is exact.
+    Grouping modes
+    --------------
+    ``arm_grouping='auto'`` (default)
+        Use **arm-level grouping** (path[1]) when the longest path string
+        exceeds 10 characters — i.e. for LMT sequences where the path grows
+        at every pulse.  This reduces 8000+ distinct path strings to just 2
+        arms (+ the initial wavepacket), giving O(n) matching and 2–3
+        matplotlib plot() calls instead of 8000.
 
-    Interpolation is only applied when the time gap between snapshots exceeds
-    *min_interp_dt* (default 5 ms).  This means:
+        Use **exact-path grouping** for short sequences (n=1 simple MZ),
+        preserving the individual output-port lines.
 
-    - **Free-flight intervals** (gap ~ T ~ seconds): interpolated with
-      ``n_interp`` points → smooth parabolic arcs.
-    - **LMT pulse intervals** (gap ~ 0.5 ms): not interpolated — the dense
-      snapshot data is already sufficient to show the LMT structure.
+    ``arm_grouping=True``  — always group by arm
+    ``arm_grouping=False`` — always group by exact path string
 
-    This avoids generating millions of redundant points for large-n runs
-    while still rendering smooth free-flight segments.
+    Arm grouping at the final beamsplitter
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    After the last beamsplitter each arm produces 2 wavepackets (one per
+    output state).  Both land at the same z position, so the arm trajectory
+    is closed by averaging their positions at the final snapshot.  The
+    ``state`` field in the result reflects the final state of the lower-
+    amplitude wavepacket for that arm (typically meaningless for LMT plots;
+    color by arm instead of state when using arm grouping).
+
+    Free-flight interpolation
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Analytic free-flight is only evaluated for intervals longer than
+    *min_interp_dt* (default 5 ms).  Short LMT pulse gaps are left as-is
+    (the dense snapshots already form a smooth curve); long free-flight
+    intervals get *n_interp* parabolic fill-points.
 
     Parameters
     ----------
-    traj           : dict — output of :func:`load_trajectory`
-    atom_idx       : int  — which atom to reconstruct (default 0)
-    potential      : str  — ``'linear_pot'`` (uniform gravity) or ``'zero_pot'``
-    n_interp       : int  — interpolation points per free-flight segment (default 200)
-    min_interp_dt  : float — minimum interval [s] to trigger interpolation (default 5 ms)
+    traj           : dict   — output of :func:`load_trajectory`
+    atom_idx       : int    — which atom to reconstruct (default 0)
+    potential      : str    — ``'linear_pot'`` or ``'zero_pot'``
+    n_interp       : int    — interpolation points per free-flight segment
+    min_interp_dt  : float  — minimum interval [s] to interpolate (default 5 ms)
+    arm_grouping   : str or bool — ``'auto'``, ``True``, or ``False``
 
     Returns
     -------
-    dict keyed by path string, each value a dict with:
-        t          (M,) float64  — time [s]
-        x, y, z    (M,) float64  — position [m]
-        state       int          — internal state (0 or 1)
-        amplitude   float64      — final wavepacket amplitude
+    dict keyed by group label (path string or arm key), each value a dict:
+        t          (M,) float64
+        x, y, z    (M,) float64  [m]
+        state       int
+        amplitude   float64
+        arm_grouped bool  — True when arm-level grouping was used
     """
     snap_times = traj['snapshot_times']
     mask = np.asarray(traj['atom_indices']) == atom_idx
@@ -114,64 +145,96 @@ def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
     pos       = traj['positions'][mask]
     vel       = traj['velocities'][mask]
 
+    # Decide grouping mode
+    max_path_len = max((len(p) for p in paths_arr), default=0)
+    if arm_grouping == 'auto':
+        use_arm = max_path_len > 10
+    else:
+        use_arm = bool(arm_grouping)
+
+    # Assign group labels
+    if use_arm:
+        # Vectorised arm-key extraction — no Python loop over path strings.
+        # Truncate every path to its first 2 Unicode characters (dtype='U2'),
+        # then view as U1 to extract the character at index 1.
+        # Paths with length 1 (initial wavepacket) get a null char (\x00) at
+        # position 1 after truncation, which we map to 'init'.
+        paths_2 = np.asarray(paths_arr, dtype='U2')            # C-level truncation
+        chars   = paths_2.view('U1').reshape(-1, 2)[:, 1]      # O(1) view, no copy
+        group_keys = np.where(chars == '\x00', 'init',
+                     np.where(chars == '0',    'lower', 'upper'))
+    else:
+        group_keys = paths_arr
+
     g = _G if potential == 'linear_pot' else 0.0
 
     def free_flight(p0, v0, t0, t_arr):
         dt = t_arr - t0
-        x = p0[0] + v0[0] * dt
-        y = p0[1] + v0[1] * dt
-        z = p0[2] + v0[2] * dt - 0.5 * g * dt**2
-        return x, y, z
+        return (p0[0] + v0[0]*dt,
+                p0[1] + v0[1]*dt,
+                p0[2] + v0[2]*dt - 0.5*g*dt**2)
 
-    unique_paths = list(dict.fromkeys(paths_arr))   # preserve encounter order
+    unique_groups = list(dict.fromkeys(group_keys))
     result = {}
 
-    for path in unique_paths:
-        pm = paths_arr == path
-        sn = snap_idx[pm]
-        order = np.argsort(sn)
-        sn   = sn[order]
-        pp   = pos[pm][order]
-        vv   = vel[pm][order]
-        st   = states[pm][order]
-        aa   = amps[pm][order]
+    for gkey in unique_groups:
+        gm_idx = np.where(group_keys == gkey)[0]   # indices of records in group
 
-        t_out, x_out, y_out, z_out = [], [], [], []
+        # Sort records by snapshot index so we can group with reduceat (O(n log n))
+        arm_snaps = snap_idx[gm_idx]
+        order     = np.argsort(arm_snaps, kind='stable')
+        arm_snaps = arm_snaps[order]
+        arm_pos   = pos[gm_idx[order]]
+        arm_vel   = vel[gm_idx[order]]
+        arm_st    = states[gm_idx[order]]
+        arm_amp   = amps[gm_idx[order]]
 
-        for i, si in enumerate(sn):
-            t0 = snap_times[si]
-            p0 = pp[i];  v0 = vv[i]
+        # Group boundaries with np.unique (O(n))
+        unique_si, first, counts = np.unique(arm_snaps,
+                                             return_index=True,
+                                             return_counts=True)
 
-            # Always record the snapshot point itself
-            t_out.append(t0)
-            x_out.append(p0[0]); y_out.append(p0[1]); z_out.append(p0[2])
+        # Sum per group with reduceat, then divide → vectorised mean (O(n))
+        sum_pos = np.add.reduceat(arm_pos, first, axis=0)
+        sum_vel = np.add.reduceat(arm_vel, first, axis=0)
+        mean_pos = sum_pos / counts[:, None]
+        mean_vel = sum_vel / counts[:, None]
 
-            # If there is a next snapshot for this path, interpolate when
-            # the interval is long enough (free-flight) but skip for short
-            # LMT-pulse intervals where snapshots are already dense.
-            if i < len(sn) - 1:
-                t1 = snap_times[sn[i + 1]]
-                dt = t1 - t0
-                if dt > min_interp_dt and n_interp > 0:
-                    t_mid = np.linspace(t0, t1, n_interp + 2)[1:-1]
-                    xm, ym, zm = free_flight(p0, v0, t0, t_mid)
-                    t_out.extend(t_mid.tolist())
-                    x_out.extend(xm.tolist())
-                    y_out.extend(ym.tolist())
-                    z_out.extend(zm.tolist())
+        # Last-record state and amplitude (after final beamsplitter)
+        last_in_group = first + counts - 1
+        st_last  = int(arm_st[last_in_group[-1]])
+        amp_last = float(arm_amp[last_in_group].mean())
 
-        # Sort by time (interleaved inserts may be out of order)
-        t_out = np.array(t_out); x_out = np.array(x_out)
-        y_out = np.array(y_out); z_out = np.array(z_out)
-        ord2 = np.argsort(t_out)
+        t_snap = snap_times[unique_si]
+        x_snap, y_snap, z_snap   = mean_pos[:,0], mean_pos[:,1], mean_pos[:,2]
+        vx_snap, vy_snap, vz_snap = mean_vel[:,0], mean_vel[:,1], mean_vel[:,2]
 
-        result[path] = {
-            't':         t_out[ord2],
-            'x':         x_out[ord2],
-            'y':         y_out[ord2],
-            'z':         z_out[ord2],
-            'state':     int(st[-1]),
-            'amplitude': float(aa[-1]),
+        # Base: all snapshot points — straight numpy, no Python loop
+        t_out = list(t_snap)
+        x_out = list(x_snap); y_out = list(y_snap); z_out = list(z_snap)
+
+        # Only loop over intervals that need analytic interpolation (long gaps)
+        if n_interp > 0:
+            dts = np.diff(t_snap)
+            for i in np.where(dts > min_interp_dt)[0]:
+                p0 = [x_snap[i], y_snap[i], z_snap[i]]
+                v0 = [vx_snap[i], vy_snap[i], vz_snap[i]]
+                t_mid = np.linspace(t_snap[i], t_snap[i+1], n_interp + 2)[1:-1]
+                xm, ym, zm = free_flight(p0, v0, t_snap[i], t_mid)
+                t_out.extend(t_mid.tolist())
+                x_out.extend(xm.tolist())
+                y_out.extend(ym.tolist())
+                z_out.extend(zm.tolist())
+
+        t_arr = np.array(t_out); ord2 = np.argsort(t_arr)
+        result[gkey] = {
+            't':          t_arr[ord2],
+            'x':          np.array(x_out)[ord2],
+            'y':          np.array(y_out)[ord2],
+            'z':          np.array(z_out)[ord2],
+            'state':      st_last,
+            'amplitude':  amp_last,
+            'arm_grouped': use_arm,
         }
 
     return result
@@ -181,6 +244,8 @@ def reconstruct_trajectories(traj, atom_idx=0, potential='linear_pot',
 
 _STATE_COLOR = {0: '#2ca02c', 1: '#d62728'}   # green=ground, red=excited
 _STATE_LABEL = {0: 'ground (s=0)', 1: 'excited (s=1)'}
+_ARM_COLOR   = {'lower': '#2ca02c', 'upper': '#d62728', 'init': '#aaaaaa'}
+_ARM_LABEL   = {'lower': 'lower arm', 'upper': 'upper arm', 'init': 'initial'}
 
 
 def plot_trajectory(traj_or_file, atom_idx=0, potential='linear_pot',
@@ -240,24 +305,33 @@ def plot_trajectory(traj_or_file, atom_idx=0, potential='linear_pot',
                                color='#aaaaaa', alpha=0.25, lw=0)
 
     # ── draw trajectories ─────────────────────────────────────────────────────
-    seen_states = set()
-    for path, data in smooth.items():
-        st  = data['state']
+    arm_grouped = any(d.get('arm_grouped', False) for d in smooth.values())
+    seen_keys = set()
+    for key, data in smooth.items():
         amp = data['amplitude']
-        col = _STATE_COLOR.get(st, 'gray')
         lw  = max(0.4, lw_scale * amp)
+        if arm_grouped:
+            col = _ARM_COLOR.get(key, 'gray')
+        else:
+            col = _STATE_COLOR.get(data['state'], 'gray')
         ax_z.plot(data['t'], data['z'] * 100,  color=col, lw=lw, alpha=0.85)
         ax_x.plot(data['t'], data['x'] * 1e3, color=col, lw=lw, alpha=0.85)
-        seen_states.add(st)
+        seen_keys.add(key)
 
     # ── labels ────────────────────────────────────────────────────────────────
     ax_z.set_ylabel('$z$ [cm]')
     ax_x.set_ylabel('$x$ [mm]')
     ax_x.set_xlabel('$t$ [s]')
 
-    legend_lines = [Line2D([0], [0], color=_STATE_COLOR[s], lw=1.5,
-                            label=_STATE_LABEL[s])
-                    for s in sorted(seen_states)]
+    if arm_grouped:
+        legend_lines = [Line2D([0], [0], color=_ARM_COLOR[k], lw=1.5,
+                                label=_ARM_LABEL[k])
+                        for k in ('lower', 'upper') if k in seen_keys]
+    else:
+        seen_states = {d['state'] for d in smooth.values()}
+        legend_lines = [Line2D([0], [0], color=_STATE_COLOR[s], lw=1.5,
+                                label=_STATE_LABEL[s])
+                        for s in sorted(seen_states)]
     if show_pulses:
         legend_lines.append(Patch(facecolor='#aaaaaa', alpha=0.35,
                                    label='laser pulse'))
