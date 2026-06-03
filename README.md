@@ -1,5 +1,14 @@
 # AISPY v0.0.1
 
+## Branch compatibility
+
+| aispy branch | works with aispp branch | description |
+|---|---|---|
+| `psmap-surrogate` | `phase-space-grid` | PSMAP loading, GPU surrogate, psgrid input generation |
+| `trajectory-plots` *(this branch)* | `trajectory-plots` | Trajectory loading, free-flight reconstruction, spacetime diagram plotting |
+
+The `trajectory-plots` branch is based on `psmap-surrogate` and includes all its changes.
+
 Python toolkit for building and analysing [ais++](https://github.com/noammouelle/aispp)
 atom-interferometry simulations.
 

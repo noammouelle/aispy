@@ -142,7 +142,10 @@ class AISFlow():
     def _write_io_params(self):
         self.aisi_file.write('# IO parameters\n')
         self.aisi_file.write('printprobs {}\n'.format(self.io_params['printprobs']))
-        self.aisi_file.write('printwavepackets {}\n\n'.format(self.io_params['printwavepackets']))
+        self.aisi_file.write('printwavepackets {}\n'.format(self.io_params['printwavepackets']))
+        if self.io_params.get('printtrajectory', 0):
+            self.aisi_file.write('printtrajectory 1\n')
+        self.aisi_file.write('\n')
 
     def _write_pulse_params(self):
         if self.sequence_params['sequencename'] == 'MZ':
