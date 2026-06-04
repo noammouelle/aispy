@@ -432,10 +432,18 @@ class AISFlow():
 
             t = end_times[-1] 
 
+        # Position-closure correction: the init and final LMT blocks each accumulate
+        # Δz_init = ħk/m·dt·n(n-1)/2 of arm separation (both with the same sign).
+        # To close the interferometer, shorten the dead-times adjacent to those blocks
+        # by δ_half = (n-1)·(dt_pi+dt_lmt)/2 each, so the arms converge by 2·Δz_init
+        # before the final block begins.  The sign for the last diamond alternates with D.
+        D = len(T_full)
+        delta_half = (lmt_order - 1) * (dt_pi + dt_lmt) / 2
+
         # walk diamonds
-        for idx,Ti in enumerate(T_full):
-            # first dead time
-            t += Ti
+        for idx, Ti in enumerate(T_full):
+            # first dead time — shortened for first diamond
+            t += Ti - delta_half if idx == 0 else Ti
             vz0 = v0-g*t
             # mirror block
             kz_mirror, om_mirror = _mirror_block(t, vz0)
@@ -443,8 +451,11 @@ class AISFlow():
             omega_vals += om_mirror
             # update time
             t = end_times[-1]
-            # second
-            t += Ti
+            # second dead time — adjusted for last diamond; sign depends on D parity
+            if idx == D - 1:
+                t += Ti - ((-1) ** D) * delta_half
+            else:
+                t += Ti
 
         if lmt_order != 1:
             # final deceleration block
