@@ -6,31 +6,28 @@ per-port interpolators for the wavepacket amplitudes and phase shifts,
 and generates synthetic atom observations for arbitrary Gaussian clouds
 and phase profiles — without re-running ais++.
 
+Supports 4D transverse phase-space grids (x0, y0, vx0, vy0) with z0/vz0
+fixed, as produced by ais++ psgrid4d mode.
+
 GPU acceleration via CuPy
 --------------------------
 When CuPy is available the **entire** ``generate_atoms`` pipeline runs on
 the GPU:
 
-  1. (CPU) Sample (x0, vx0) with numpy — stays on CPU as scipy input.
-  2. (GPU) Bilinear interpolation on the regular PSMAP grid.  Because the
-     grid is regular (linspace) the index computation reduces to one
-     division per dimension; no scipy call is made in this path.
+  1. (CPU) Sample (x0, y0, vx0, vy0) with numpy.
+  2. (GPU) Quadrilinear interpolation on the regular 4D PSMAP grid.
   3. (GPU) Port probabilities via _port_prob (cos, multiply, reduce).
   4. (GPU) Bernoulli sampling with CuPy's PRNG.
   5. (CPU) Thin host←device copy for the output DataFrame.
 
-The only CPU work inside the hot path is sampling (x0, vx0) and
-evaluating the user-supplied ``phase_profile``.  scipy interpolation is
-used only when ``use_gpu=False`` or CuPy is unavailable.
-
 Typical usage
 -------------
 >>> from aispy.psmap import load_psmap, PSMAPSurrogate
->>> sur = PSMAPSurrogate(load_psmap('PSR_EXAMPLE_PSGRID.h5'), t_det=4.451)
->>> df  = sur.generate_atoms(mu_x0=0., mu_vx0=0.,
-...                          sigma_x=1e-4, sigma_vx=3.1e-4,
-...                          phi0=0., natoms=500_000,
-...                          phase_profile=lambda xf, vxf: 3140. * xf)
+>>> sur = PSMAPSurrogate(load_psmap('PSGRID4D_Z0.h5'), t_det=3.8)
+>>> df  = sur.generate_atoms(mu_x0=0., mu_y0=0., mu_vx0=0., mu_vy0=0.,
+...                          sigma_x=1e-4, sigma_y=1e-4,
+...                          sigma_vx=3.1e-4, sigma_vy=3.1e-4,
+...                          phi0=0., natoms=500_000)
 """
 
 import warnings
@@ -93,15 +90,14 @@ def _port_prob(amp0, amp1, dphi, is_interfering, delta=0.0):
     """
     Port probability P = A0² + A1² + interfering·2A0A1·cos(Δφ + δ).
 
-    Works transparently with both numpy and cupy arrays via
-    ``cp.get_array_module``.
+    Works transparently with both numpy and cupy arrays.
     """
     xp = _get_xp(amp0)
     return (amp0**2 + amp1**2
             + is_interfering * 2.0 * amp0 * amp1 * xp.cos(dphi + delta))
 
 
-# ── GPU bilinear interpolation on a regular grid ──────────────────────────────
+# ── GPU N-linear interpolation on a regular grid ──────────────────────────────
 
 def _find_cell(arr, lo, dx, n):
     """
@@ -116,37 +112,42 @@ def _find_cell(arr, lo, dx, n):
     return idx, tx
 
 
-def _bilinear(grid, ix, ivx, tx, tvx):
+def _quadrilinear(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy):
     """
-    Bilinear interpolation on a 2D grid using pre-computed cell indices
-    and fractional offsets.  All arrays may be cupy or numpy.
+    Quadrilinear interpolation on a 4D grid (x, y, vx, vy) using
+    pre-computed cell indices and fractional offsets.  16-corner sum.
+    All arrays may be cupy or numpy.
     """
-    f00 = grid[ix,   ivx  ]
-    f10 = grid[ix+1, ivx  ]
-    f01 = grid[ix,   ivx+1]
-    f11 = grid[ix+1, ivx+1]
-    return (f00*(1-tx)*(1-tvx) + f10*tx*(1-tvx)
-          + f01*(1-tx)*tvx    + f11*tx*tvx)
+    result = None
+    for bx in range(2):
+        wx = tx if bx else (1.0 - tx)
+        for by in range(2):
+            wy = ty if by else (1.0 - ty)
+            for bvx in range(2):
+                wvx = tvx if bvx else (1.0 - tvx)
+                for bvy in range(2):
+                    wvy = tvy if bvy else (1.0 - tvy)
+                    corner = grid[ix+bx, iy+by, ivx+bvx, ivy+bvy]
+                    term   = wx * wy * wvx * wvy * corner
+                    result = term if result is None else result + term
+    return result
 
 
 # ── Surrogate ─────────────────────────────────────────────────────────────────
 
 class PSMAPSurrogate:
     """
-    Surrogate model built from an ais++ phase space map.
+    Surrogate model built from an ais++ 4D transverse phase space map.
 
-    The PSMAP stores, for every node (x0, vx0) on a regular grid and every
-    output port, the wavepacket amplitudes and the phase difference Δφ
-    (computed in quad precision inside ais++).
+    The PSMAP stores, for every node (x0, y0, vx0, vy0) on a regular grid
+    and every output port, the wavepacket amplitudes and the phase difference
+    Δφ (computed in quad precision inside ais++).  z0 and vz0 are fixed.
 
     GPU acceleration
     ----------------
     When CuPy is available and ``use_gpu=True`` (the default), the residual
     grids are uploaded to the GPU at construction time and the **entire**
-    ``generate_atoms`` pipeline — interpolation, probability computation, and
-    Bernoulli sampling — runs on the GPU.  The CPU overhead per call is
-    limited to sampling (x0, vx0) with the numpy PRNG and a thin
-    host←device copy for the output.
+    ``generate_atoms`` pipeline runs on the GPU.
 
     Parameters
     ----------
@@ -171,23 +172,46 @@ class PSMAPSurrogate:
         nP       = int(np.bincount(atom_idx)[0])
         self.nP  = nP
 
-        # Identify regular (x0, vx0) grid
-        first     = np.searchsorted(atom_idx, np.arange(n_atoms))
-        x0_atoms  = psmap['initial_positions'][first, 0]
-        vx0_atoms = psmap['initial_velocities'][first, 0]
-        self.xs   = np.unique(x0_atoms)
-        self.vxs  = np.unique(vx0_atoms)
-        self.nx   = len(self.xs)
-        self.nvx  = len(self.vxs)
+        # One row per atom (first occurrence of each atom index)
+        first = np.searchsorted(atom_idx, np.arange(n_atoms))
 
-        # Grid spacing (uniform by construction from ais++ linspace)
+        # Extract 4 transverse coordinates for each grid atom
+        x0_atoms  = psmap['initial_positions'][first, 0]
+        y0_atoms  = psmap['initial_positions'][first, 1]
+        vx0_atoms = psmap['initial_velocities'][first, 0]
+        vy0_atoms = psmap['initial_velocities'][first, 1]
+
+        self.xs   = np.unique(x0_atoms)
+        self.ys   = np.unique(y0_atoms)
+        self.vxs  = np.unique(vx0_atoms)
+        self.vys  = np.unique(vy0_atoms)
+        self.nx   = len(self.xs)
+        self.ny   = len(self.ys)
+        self.nvx  = len(self.vxs)
+        self.nvy  = len(self.vys)
+
+        # Grid spacings (uniform by construction from ais++ linspace)
         self._x_lo  = float(self.xs[0])
+        self._y_lo  = float(self.ys[0])
         self._vx_lo = float(self.vxs[0])
-        self._dx    = float((self.xs[-1]  - self.xs[0])  / (self.nx  - 1)) if self.nx  > 1 else 1.0
-        self._dvx   = float((self.vxs[-1] - self.vxs[0]) / (self.nvx - 1)) if self.nvx > 1 else 1.0
+        self._vy_lo = float(self.vys[0])
+        self._dx  = float((self.xs[-1]  - self.xs[0])  / (self.nx  - 1)) if self.nx  > 1 else 1.0
+        self._dy  = float((self.ys[-1]  - self.ys[0])  / (self.ny  - 1)) if self.ny  > 1 else 1.0
+        self._dvx = float((self.vxs[-1] - self.vxs[0]) / (self.nvx - 1)) if self.nvx > 1 else 1.0
+        self._dvy = float((self.vys[-1] - self.vys[0]) / (self.nvy - 1)) if self.nvy > 1 else 1.0
+
+        # Map each atom to its (ix, iy, ivx, ivy) grid index.
+        # Using searchsorted is robust to any axis ordering in the ais++ output.
+        xi  = np.searchsorted(self.xs,  x0_atoms)
+        yi  = np.searchsorted(self.ys,  y0_atoms)
+        vxi = np.searchsorted(self.vxs, vx0_atoms)
+        vyi = np.searchsorted(self.vys, vy0_atoms)
 
         def to_grid(a):
-            return a.reshape(n_atoms, nP).reshape(self.nx, self.nvx, nP)
+            flat = a.reshape(n_atoms, nP)
+            g = np.empty((self.nx, self.ny, self.nvx, self.nvy, nP))
+            g[xi, yi, vxi, vyi, :] = flat
+            return g
 
         dphi  = to_grid(psmap['phase_shifts'])
         amp0  = to_grid(psmap['amp0'])
@@ -195,74 +219,94 @@ class PSMAPSurrogate:
         inter = to_grid(psmap['is_interfering'].astype(float))
         state = to_grid(psmap['states'])
 
-        self.port_states      = state[0, 0, :]
-        self.port_interfering = inter[0, 0, :]
+        self.port_states      = state[0, 0, 0, 0, :]
+        self.port_interfering = inter[0, 0, 0, 0, :]
         self.port_path0 = psmap['path0'][first[0]:first[0]+nP]
         self.port_path1 = psmap['path1'][first[0]:first[0]+nP]
 
-        # Decompose dphi into a linear trend (stripped before interpolation)
-        # and a smooth residual that the interpolator actually sees.
-        X0g  = self.xs[:, None]  * np.ones((1, self.nvx))
-        VX0g = np.ones((self.nx, 1)) * self.vxs[None, :]
-        self._dphi_linear = np.zeros((nP, 3))
+        # Decompose dphi into a 4D linear trend + smooth residual.
+        # The linear part is evaluated analytically at query points;
+        # the residual is what the interpolator sees (much smoother).
+        shape = (self.nx, self.ny, self.nvx, self.nvy)
+        X0g  = self.xs [:, None, None, None] * np.ones(shape)
+        Y0g  = self.ys [None, :, None, None] * np.ones(shape)
+        VX0g = self.vxs[None, None, :, None] * np.ones(shape)
+        VY0g = self.vys[None, None, None, :] * np.ones(shape)
+
+        self._dphi_linear = np.zeros((nP, 5))  # [c0, cx, cy, cvx, cvy]
         dphi_resid = np.empty_like(dphi)
 
+        x0f  = X0g.ravel();  y0f  = Y0g.ravel()
+        vx0f = VX0g.ravel(); vy0f = VY0g.ravel()
+        A = np.column_stack([np.ones(n_atoms), x0f, y0f, vx0f, vy0f])
+
         for pi in range(nP):
-            d = dphi[:, :, pi]
-            A = np.column_stack([np.ones(self.nx * self.nvx),
-                                 X0g.ravel(), VX0g.ravel()])
+            d = dphi[:, :, :, :, pi]
             c, *_ = np.linalg.lstsq(A, d.ravel(), rcond=None)
             self._dphi_linear[pi] = c
-            dphi_resid[:, :, pi]  = d - (c[0] + c[1]*X0g + c[2]*VX0g)
+            dphi_resid[:, :, :, :, pi] = (
+                d - (c[0] + c[1]*X0g + c[2]*Y0g + c[3]*VX0g + c[4]*VY0g))
 
-        # CPU interpolators (used when use_gpu=False)
+        # CPU interpolators (scipy handles N-D natively)
         kw = dict(method='linear', bounds_error=False, fill_value=None)
+        axes = (self.xs, self.ys, self.vxs, self.vys)
         self._interp_dphi = [
-            RegularGridInterpolator((self.xs, self.vxs), dphi_resid[:,:,pi], **kw)
+            RegularGridInterpolator(axes, dphi_resid[:,:,:,:,pi], **kw)
             for pi in range(nP)]
         self._interp_amp0 = [
-            RegularGridInterpolator((self.xs, self.vxs), amp0[:,:,pi], **kw)
+            RegularGridInterpolator(axes, amp0[:,:,:,:,pi], **kw)
             for pi in range(nP)]
         self._interp_amp1 = [
-            RegularGridInterpolator((self.xs, self.vxs), amp1[:,:,pi], **kw)
+            RegularGridInterpolator(axes, amp1[:,:,:,:,pi], **kw)
             for pi in range(nP)]
 
-        # GPU: upload grids once at init time
+        # GPU: upload 4D grids once at construction time
         if self._use_gpu:
-            self._gpu_dphi_resid = [cp.asarray(dphi_resid[:,:,pi], dtype=cp.float64)
-                                    for pi in range(nP)]
-            self._gpu_amp0 = [cp.asarray(amp0[:,:,pi], dtype=cp.float64)
-                              for pi in range(nP)]
-            self._gpu_amp1 = [cp.asarray(amp1[:,:,pi], dtype=cp.float64)
-                              for pi in range(nP)]
+            self._gpu_dphi_resid = [
+                cp.asarray(dphi_resid[:,:,:,:,pi], dtype=cp.float64)
+                for pi in range(nP)]
+            self._gpu_amp0 = [
+                cp.asarray(amp0[:,:,:,:,pi], dtype=cp.float64)
+                for pi in range(nP)]
+            self._gpu_amp1 = [
+                cp.asarray(amp1[:,:,:,:,pi], dtype=cp.float64)
+                for pi in range(nP)]
             self._port_states_gpu = cp.asarray(self.port_states)
             self._port_inter_gpu  = cp.asarray(self.port_interfering)
 
-        self._fit_metrics = self._compute_fit_metrics(dphi, X0g, VX0g)
+        self._fit_metrics = self._compute_fit_metrics(dphi, X0g, Y0g, VX0g, VY0g)
 
     # ── Fit quality ──────────────────────────────────────────────────────────
 
-    def _compute_fit_metrics(self, dphi, X0g, VX0g):
-        x0f  = X0g.ravel(); vx0f = VX0g.ravel()
-        A = np.column_stack([np.ones_like(x0f), x0f, vx0f,
-                             x0f**2, x0f*vx0f, vx0f**2])
+    def _compute_fit_metrics(self, dphi, X0g, Y0g, VX0g, VY0g):
+        x0f  = X0g.ravel();  y0f  = Y0g.ravel()
+        vx0f = VX0g.ravel(); vy0f = VY0g.ravel()
+        # Full 2nd-order polynomial in 4 variables (15 terms)
+        A = np.column_stack([
+            np.ones_like(x0f),
+            x0f, y0f, vx0f, vy0f,
+            x0f**2, x0f*y0f, x0f*vx0f, x0f*vy0f,
+            y0f**2, y0f*vx0f, y0f*vy0f,
+            vx0f**2, vx0f*vy0f, vy0f**2,
+        ])
+        n_atoms = len(x0f)
         metrics = {}
         for pi in range(self.nP):
-            d      = dphi[:, :, pi].ravel()
+            d      = dphi[:, :, :, :, pi].ravel()
             c, *_  = np.linalg.lstsq(A, d, rcond=None)
             pred   = A @ c
             ss_res = np.sum((d - pred)**2)
             ss_tot = np.sum((d - d.mean())**2)
             metrics[pi] = {
                 'r2':               float(1.0 - ss_res/ss_tot if ss_tot > 0 else 1.0),
-                'residual_std_rad': float(np.sqrt(ss_res / len(d))),
+                'residual_std_rad': float(np.sqrt(ss_res / n_atoms)),
                 'quad_coeffs':      c,
             }
         return metrics
 
     def fit_quality(self):
         """
-        Return quality metrics for a quadratic fit to Δφ(x0, vx0).
+        Return quality metrics for a quadratic fit to Δφ(x0, y0, vx0, vy0).
 
         Returns
         -------
@@ -274,35 +318,41 @@ class PSMAPSurrogate:
 
     # ── Evaluation ───────────────────────────────────────────────────────────
 
-    def _eval_gpu(self, x0_gpu, vx0_gpu):
-        """Evaluate on GPU using bilinear interpolation on the regular grid."""
-        ix,  tx  = _find_cell(x0_gpu,  self._x_lo,  self._dx,  self.nx)
-        ivx, tvx = _find_cell(vx0_gpu, self._vx_lo, self._dvx, self.nvx)
+    def _eval_gpu(self, x0_g, y0_g, vx0_g, vy0_g):
+        """Quadrilinear interpolation on GPU."""
+        ix,  tx  = _find_cell(x0_g,  self._x_lo,  self._dx,  self.nx)
+        iy,  ty  = _find_cell(y0_g,  self._y_lo,  self._dy,  self.ny)
+        ivx, tvx = _find_cell(vx0_g, self._vx_lo, self._dvx, self.nvx)
+        ivy, tvy = _find_cell(vy0_g, self._vy_lo, self._dvy, self.nvy)
 
-        dphi_out = cp.empty((len(x0_gpu), self.nP), dtype=cp.float64)
-        amp0_out = cp.empty((len(x0_gpu), self.nP), dtype=cp.float64)
-        amp1_out = cp.empty((len(x0_gpu), self.nP), dtype=cp.float64)
+        N = len(x0_g)
+        dphi_out = cp.empty((N, self.nP), dtype=cp.float64)
+        amp0_out = cp.empty((N, self.nP), dtype=cp.float64)
+        amp1_out = cp.empty((N, self.nP), dtype=cp.float64)
 
         for pi in range(self.nP):
             c = self._dphi_linear[pi]
-            dphi_out[:, pi] = (_bilinear(self._gpu_dphi_resid[pi], ix, ivx, tx, tvx)
-                               + c[0] + c[1]*x0_gpu + c[2]*vx0_gpu)
-            amp0_out[:, pi] = _bilinear(self._gpu_amp0[pi], ix, ivx, tx, tvx)
-            amp1_out[:, pi] = _bilinear(self._gpu_amp1[pi], ix, ivx, tx, tvx)
+            dphi_out[:, pi] = (
+                _quadrilinear(self._gpu_dphi_resid[pi],
+                              ix, iy, ivx, ivy, tx, ty, tvx, tvy)
+                + c[0] + c[1]*x0_g + c[2]*y0_g + c[3]*vx0_g + c[4]*vy0_g)
+            amp0_out[:, pi] = _quadrilinear(
+                self._gpu_amp0[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy)
+            amp1_out[:, pi] = _quadrilinear(
+                self._gpu_amp1[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy)
 
         return dphi_out, amp0_out, amp1_out
 
-    def eval(self, x0_arr, vx0_arr):
+    def eval(self, x0_arr, y0_arr, vx0_arr, vy0_arr):
         """
-        Evaluate the surrogate at arbitrary (x0, vx0) coordinates.
+        Evaluate the surrogate at arbitrary (x0, y0, vx0, vy0) coordinates.
 
-        Uses GPU bilinear interpolation when ``use_gpu=True``, scipy on CPU
-        otherwise.  Always returns **numpy** arrays so the result can be
-        used directly with scipy or pandas.
+        Uses GPU quadrilinear interpolation when ``use_gpu=True``, scipy on
+        CPU otherwise.  Always returns **numpy** arrays.
 
         Parameters
         ----------
-        x0_arr, vx0_arr : array-like, shape (N,)
+        x0_arr, y0_arr, vx0_arr, vy0_arr : array-like, shape (N,)
 
         Returns
         -------
@@ -311,41 +361,53 @@ class PSMAPSurrogate:
         amp1  : ndarray (N, nP)
         """
         x0_arr  = np.asarray(x0_arr,  dtype=float)
+        y0_arr  = np.asarray(y0_arr,  dtype=float)
         vx0_arr = np.asarray(vx0_arr, dtype=float)
+        vy0_arr = np.asarray(vy0_arr, dtype=float)
 
-        out_frac = (
-            np.mean((x0_arr  < self.xs[0])  | (x0_arr  > self.xs[-1]))
-          + np.mean((vx0_arr < self.vxs[0]) | (vx0_arr > self.vxs[-1]))
-        ) / 2.0
+        axes_info = [
+            (x0_arr,  self.xs,  'x0',  1e6, 'µm'),
+            (y0_arr,  self.ys,  'y0',  1e6, 'µm'),
+            (vx0_arr, self.vxs, 'vx0', 1e3, 'mm/s'),
+            (vy0_arr, self.vys, 'vy0', 1e3, 'mm/s'),
+        ]
+        out_frac = np.mean([
+            (arr < ax[0]) | (arr > ax[-1])
+            for arr, ax, *_ in axes_info
+        ])
         if out_frac > 0.01:
+            details = ', '.join(
+                f'{name} ∈ [{ax[0]*scale:.2f}, {ax[-1]*scale:.2f}] {unit}'
+                for _, ax, name, scale, unit in axes_info)
             warnings.warn(
                 f'{out_frac*100:.1f}% of sampled atoms lie outside the PSMAP '
-                f'grid (x0 ∈ [{self.xs[0]*1e6:.0f}, {self.xs[-1]*1e6:.0f}] µm, '
-                f'vx0 ∈ [{self.vxs[0]*1e3:.2f}, {self.vxs[-1]*1e3:.2f}] mm/s). '
-                'Regenerate the PSMAP with a wider grid.',
+                f'grid ({details}). Regenerate the PSMAP with a wider grid.',
                 stacklevel=3)
 
         if self._use_gpu:
-            x0_gpu  = cp.asarray(x0_arr)
-            vx0_gpu = cp.asarray(vx0_arr)
-            dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_gpu, vx0_gpu)
+            dphi_g, amp0_g, amp1_g = self._eval_gpu(
+                cp.asarray(x0_arr),  cp.asarray(y0_arr),
+                cp.asarray(vx0_arr), cp.asarray(vy0_arr))
             return cp.asnumpy(dphi_g), cp.asnumpy(amp0_g), cp.asnumpy(amp1_g)
 
-        pts      = np.column_stack([x0_arr, vx0_arr])
-        dphi_out = np.empty((len(x0_arr), self.nP))
-        amp0_out = np.empty((len(x0_arr), self.nP))
-        amp1_out = np.empty((len(x0_arr), self.nP))
+        pts = np.column_stack([x0_arr, y0_arr, vx0_arr, vy0_arr])
+        N   = len(x0_arr)
+        dphi_out = np.empty((N, self.nP))
+        amp0_out = np.empty((N, self.nP))
+        amp1_out = np.empty((N, self.nP))
         for pi in range(self.nP):
             c = self._dphi_linear[pi]
             dphi_out[:, pi] = (self._interp_dphi[pi](pts)
-                               + c[0] + c[1]*x0_arr + c[2]*vx0_arr)
+                               + c[0] + c[1]*x0_arr + c[2]*y0_arr
+                               + c[3]*vx0_arr + c[4]*vy0_arr)
             amp0_out[:, pi] = self._interp_amp0[pi](pts)
             amp1_out[:, pi] = self._interp_amp1[pi](pts)
         return dphi_out, amp0_out, amp1_out
 
     # ── Atom generation ───────────────────────────────────────────────────────
 
-    def generate_atoms(self, mu_x0, mu_vx0, sigma_x, sigma_vx,
+    def generate_atoms(self, mu_x0, mu_y0, mu_vx0, mu_vy0,
+                       sigma_x, sigma_y, sigma_vx, sigma_vy,
                        phi0=0.0, natoms=100_000,
                        phase_profile=None, rng=None):
         """
@@ -353,62 +415,66 @@ class PSMAPSurrogate:
 
         GPU pipeline (when CuPy is available)
         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        1. CPU  — sample (x0, vx0); compute xf = x0 + vx0·t_det.
-        2. CPU  — evaluate phase_profile(xf, vxf) if provided.
-        3. GPU  — host→device transfer of x0, vx0, delta (3N float64).
-        4. GPU  — bilinear interpolation of dphi, amp0, amp1.
+        1. CPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
+        2. CPU  — evaluate phase_profile(xf, yf, vxf, vyf) if provided.
+        3. GPU  — host→device transfer.
+        4. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
         5. GPU  — _port_prob and Bernoulli sampling.
-        6. CPU  — device→host transfer of state, prob_s0 (N · 9 bytes).
-
-        The ``phase_profile`` callable receives **numpy** arrays and must
-        return an array-like; its output is moved to the GPU automatically.
+        6. CPU  — device→host transfer of state, prob_s0.
 
         Parameters
         ----------
-        mu_x0, mu_vx0     : float   Cloud centre-of-mass [m, m/s]
-        sigma_x, sigma_vx  : float  Cloud 1σ spreads [m, m/s]
-        phi0               : float  Global interferometer phase offset [rad]
-        natoms             : int    Number of atoms to simulate
-        phase_profile      : callable or None
-            ``f(xf, vxf) -> array (natoms,)`` [rad].
-            Example — phase shear: ``lambda xf, vxf: kappa * xf``
-        rng                : numpy Generator, int seed, or None
+        mu_x0, mu_y0         : float  Cloud COM [m]
+        mu_vx0, mu_vy0       : float  Cloud COM velocity [m/s]
+        sigma_x, sigma_y     : float  Cloud 1σ position spreads [m]
+        sigma_vx, sigma_vy   : float  Cloud 1σ velocity spreads [m/s]
+        phi0                 : float  Global phase offset [rad]
+        natoms               : int    Number of atoms to simulate
+        phase_profile        : callable or None
+            ``f(xf, yf, vxf, vyf) -> array (natoms,)`` [rad].
+        rng                  : numpy Generator, int seed, or None
 
         Returns
         -------
         pandas.DataFrame with columns:
-            x0, vx0   Initial phase-space coordinates [m, m/s]
-            xf, vxf   Final transverse position and velocity [m, m/s]
-            state     Output internal state (0 = ground, 1 = excited)
-            prob_s0   Probability of ground state for this atom
+            x0, y0, vx0, vy0   Initial phase-space coordinates [m, m/s]
+            xf, yf, vxf, vyf   Final transverse coordinates [m, m/s]
+            state               Output internal state (0=ground, 1=excited)
+            prob_s0             Probability of ground state for this atom
         """
         import pandas as pd
 
         if not isinstance(rng, np.random.Generator):
             rng = np.random.default_rng(rng)
 
-        # ── 1. Sample + kinematic map (CPU) ──────────────────────────────────
+        # ── 1. Sample + free-flight kinematic map (CPU) ───────────────────────
         x0  = rng.normal(mu_x0,  sigma_x,  natoms)
+        y0  = rng.normal(mu_y0,  sigma_y,  natoms)
         vx0 = rng.normal(mu_vx0, sigma_vx, natoms)
-        xf  = x0 + vx0 * self.t_det
+        vy0 = rng.normal(mu_vy0, sigma_vy, natoms)
+        xf  = x0  + vx0 * self.t_det
+        yf  = y0  + vy0 * self.t_det
         vxf = vx0.copy()
+        vyf = vy0.copy()
 
         # ── 2. Phase profile (CPU — user callable receives numpy) ─────────────
-        delta_np = (np.asarray(phase_profile(xf, vxf), dtype=np.float64)
+        delta_np = (np.asarray(phase_profile(xf, yf, vxf, vyf), dtype=np.float64)
                     if phase_profile is not None
                     else np.zeros(natoms, dtype=np.float64))
 
         if self._use_gpu:
             # ── 3. Host → device ─────────────────────────────────────────────
-            x0_gpu    = cp.asarray(x0,       dtype=cp.float64)
-            vx0_gpu   = cp.asarray(vx0,      dtype=cp.float64)
-            delta_gpu = cp.asarray(delta_np, dtype=cp.float64)
+            x0_g  = cp.asarray(x0,       dtype=cp.float64)
+            y0_g  = cp.asarray(y0,       dtype=cp.float64)
+            vx0_g = cp.asarray(vx0,      dtype=cp.float64)
+            vy0_g = cp.asarray(vy0,      dtype=cp.float64)
+            delta_g = cp.asarray(delta_np, dtype=cp.float64)
 
-            # ── 4. GPU bilinear interpolation ─────────────────────────────────
-            dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_gpu, vx0_gpu)
+            # ── 4. GPU quadrilinear interpolation ─────────────────────────────
+            dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_g, y0_g, vx0_g, vy0_g)
 
             # ── 5. Port probabilities + Bernoulli sampling ────────────────────
-            total_phase = dphi_g + (delta_gpu + phi0)[:, None]
+            total_phase = dphi_g + (delta_g + phi0)[:, None]
             probs   = _port_prob(amp0_g, amp1_g, dphi_g,
                                  self._port_inter_gpu[None, :],
                                  delta=total_phase - dphi_g)
@@ -421,14 +487,15 @@ class PSMAPSurrogate:
             state_np   = cp.asnumpy(state)
 
         else:
-            pts    = np.column_stack([x0, vx0])
+            pts = np.column_stack([x0, y0, vx0, vy0])
             dphi_np = np.empty((natoms, self.nP))
             amp0_np = np.empty((natoms, self.nP))
             amp1_np = np.empty((natoms, self.nP))
             for pi in range(self.nP):
                 c = self._dphi_linear[pi]
                 dphi_np[:, pi] = (self._interp_dphi[pi](pts)
-                                  + c[0] + c[1]*x0 + c[2]*vx0)
+                                  + c[0] + c[1]*x0 + c[2]*y0
+                                  + c[3]*vx0 + c[4]*vy0)
                 amp0_np[:, pi] = self._interp_amp0[pi](pts)
                 amp1_np[:, pi] = self._interp_amp1[pi](pts)
 
@@ -440,6 +507,8 @@ class PSMAPSurrogate:
             prob_s0_np = np.clip(probs[:, s0_mask].sum(axis=1), 0.0, 1.0)
             state_np   = (rng.uniform(size=natoms) > prob_s0_np).astype(np.int8)
 
-        return pd.DataFrame({'x0': x0, 'vx0': vx0,
-                             'xf': xf, 'vxf': vxf,
-                             'state': state_np, 'prob_s0': prob_s0_np})
+        return pd.DataFrame({
+            'x0': x0,  'y0': y0,  'vx0': vx0,  'vy0': vy0,
+            'xf': xf,  'yf': yf,  'vxf': vxf,  'vyf': vyf,
+            'state': state_np, 'prob_s0': prob_s0_np,
+        })
