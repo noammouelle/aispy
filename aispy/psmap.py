@@ -410,7 +410,7 @@ class PSMAPSurrogate:
                        sigma_x, sigma_y, sigma_vx, sigma_vy,
                        phi0=0.0, natoms=100_000,
                        phase_profile=None, rng=None,
-                       _return_arrays=False):
+                       _return_arrays=False, _image_edges=None):
         """
         Sample atoms from a Gaussian cloud and return synthetic observations.
 
@@ -428,15 +428,27 @@ class PSMAPSurrogate:
         probability for each returned atom (useful for importance weighting);
         ``prob_s0`` is the conditional ground-state probability p0/(p0+p1).
 
-        GPU fast path (use_gpu=True and _return_arrays=True)
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        GPU image path (use_gpu=True and _image_edges is not None)  ← fastest
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        1. GPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
+        2. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
+        3. GPU  — port probabilities; detection + state Bernoulli draws.
+        4. GPU  — 2D histogram into (res × res) bins using _image_edges.
+        5. CPU  — device→host for two (res, res) uint16 images only.
+
+        At 10^8 atoms the detected arrays are ~1.6 GB; the two images are
+        ~8 MB.  Histogramming on the GPU before D2H reduces transfer and
+        CPU work from ~14 s to ~1 s.
+
+        GPU array path (use_gpu=True and _return_arrays=True)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         1. GPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
         2. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
         3. GPU  — port probabilities; detection + state Bernoulli draws.
         4. CPU  — device→host for detected atoms only (state, xf, yf).
 
-        GPU DataFrame path (use_gpu=True and _return_arrays=False)
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        GPU DataFrame path (use_gpu=True, _return_arrays=False, no _image_edges)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         1. CPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
         2. CPU  — evaluate phase_profile(xf, yf, vxf, vyf) if provided.
         3. GPU  — host→device transfer.
@@ -457,30 +469,41 @@ class PSMAPSurrogate:
             ``f(xf, yf, vxf, vyf) -> array (natoms,)`` [rad].
         rng                  : numpy Generator, int seed, or None
         _return_arrays       : bool
-            When True, return (states, xf, yf) as numpy arrays instead of a
-            DataFrame.  Enables the GPU fast path (no H2D transfer, minimal
-            D2H).  Ignored when use_gpu=False.
+            When True and use_gpu=True, return (states, xf, yf) as numpy
+            arrays instead of a DataFrame (GPU array path).
+            Ignored when _image_edges is provided.
+        _image_edges         : array-like of shape (res+1,), or None
+            Symmetric bin edges for both x and y axes [m].  When provided,
+            the 2D histogram is computed on the GPU (or CPU when use_gpu is
+            False) and the function returns (img_s0, img_s1) uint16 images
+            instead of per-atom data.  Takes precedence over _return_arrays.
 
         Returns
         -------
-        If _return_arrays=False (default):
+        If _image_edges is not None:
+            tuple (img_s0, img_s1) — numpy uint16 arrays of shape (res, res).
+                img_s0  ground-state (state=0) atom counts per pixel
+                img_s1  excited-state (state=1) atom counts per pixel
+            Atoms outside the bin range are silently dropped (same as
+            np.histogram2d behaviour).
+        If _return_arrays=True and use_gpu=True:
+            tuple (states, xf, yf) — numpy arrays for detected atoms only.
+                states : int8  (0=ground, 1=excited)
+                xf     : float64  final x position [m]
+                yf     : float64  final y position [m]
+        Otherwise:
             pandas.DataFrame (detected atoms only) with columns:
                 x0, y0, vx0, vy0   Initial phase-space coordinates [m, m/s]
                 xf, yf, vxf, vyf   Final transverse coordinates [m, m/s]
                 state               Detected output state (0=ground, 1=excited)
                 prob_s0             Conditional P(ground | detected) = p0/(p0+p1)
                 prob_det            Detection probability p0 + p1 for this atom
-        If _return_arrays=True:
-            tuple (states, xf, yf) — numpy arrays for detected atoms only.
-                states : int8  (0=ground, 1=excited)
-                xf     : float64  final x position [m]
-                yf     : float64  final y position [m]
         """
         if not isinstance(rng, np.random.Generator):
             rng = np.random.default_rng(rng)
 
-        # ── GPU fast path: sample on GPU, return minimal arrays ───────────────
-        if self._use_gpu and _return_arrays:
+        # ── GPU fast path: sample + interpolate entirely on device ──────────
+        if self._use_gpu and (_return_arrays or _image_edges is not None):
             x0_g  = cp.random.normal(mu_x0,  sigma_x,  natoms, dtype=cp.float64)
             y0_g  = cp.random.normal(mu_y0,  sigma_y,  natoms, dtype=cp.float64)
             vx0_g = cp.random.normal(mu_vx0, sigma_vx, natoms, dtype=cp.float64)
@@ -524,6 +547,17 @@ class PSMAPSurrogate:
             prob_s0_g  = cp.where(prob_det_g > 0,
                                   p0 / cp.maximum(prob_det_g, 1e-300), 0.5)
             state_g    = (u2 > prob_s0_g).astype(cp.int8)
+
+            if _image_edges is not None:
+                # Histogram on GPU before D2H: transfers ~8 MB instead of ~1.6 GB
+                # at 10^8 atoms, saving ~14 s of CPU histogram work.
+                edges_g  = cp.asarray(_image_edges, dtype=cp.float64)
+                xf_det   = xf_g[det_mask_g]
+                yf_det   = yf_g[det_mask_g]
+                s0_det_g = (state_g[det_mask_g] == 0)
+                h0, _, _ = cp.histogram2d(xf_det[ s0_det_g], yf_det[ s0_det_g], bins=edges_g)
+                h1, _, _ = cp.histogram2d(xf_det[~s0_det_g], yf_det[~s0_det_g], bins=edges_g)
+                return h0.get().astype(np.uint16), h1.get().astype(np.uint16)
 
             return (
                 cp.asnumpy(state_g[det_mask_g]),
@@ -634,6 +668,15 @@ class PSMAPSurrogate:
             state_np    = state_np[det_mask_np]
             prob_s0_np  = prob_s0_np[det_mask_np]
             prob_det_np = prob_det_np[det_mask_np]
+
+        if _image_edges is not None:
+            edges    = np.asarray(_image_edges)
+            xf_det   = xf[det_mask_np]
+            yf_det   = yf[det_mask_np]
+            s0       = (state_np == 0)
+            h0, _, _ = np.histogram2d(xf_det[ s0], yf_det[ s0], bins=edges)
+            h1, _, _ = np.histogram2d(xf_det[~s0], yf_det[~s0], bins=edges)
+            return h0.astype(np.uint16), h1.astype(np.uint16)
 
         return pd.DataFrame({
             'x0':  x0[det_mask_np],  'y0':  y0[det_mask_np],
