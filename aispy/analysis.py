@@ -10,30 +10,31 @@ def load_data(filename):
         with h5py.File(filename,"r") as file:
             states = file["states"][:]
             positions = file["positions"][:]
-            velocities = file["velocities"][:]
+            velocities = file["velocities"][:] if "velocities" in file else None
             probabilities = file["probabilities"][:]
             interference_flag = file["interferingFlag"][:]
             phase_shifts = file["phaseShifts"][:]
             phase_shifts_err = file["phaseShiftErrors"][:]
 
-        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
-                        "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
-                        "probabilities":probabilities, "interference_flag":interference_flag,
-                        "phase_shifts":phase_shifts, "phase_shifts_errors":phase_shifts_err})
+        data = {"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                "probabilities":probabilities, "interference_flag":interference_flag,
+                "phase_shifts":phase_shifts, "phase_shifts_errors":phase_shifts_err}
     else:
         with h5py.File(filename,"r") as file:
             states = file["states"][:]
             positions = file["positions"][:]
-            velocities = file["velocities"][:]
+            velocities = file["velocities"][:] if "velocities" in file else None
             phase_shifts = file["phaseShifts"][:]
             phase_shifts_err = file["phaseShiftErrors"][:]
             interference_flag = file["interferingFlag"][:]
 
-        df = pd.DataFrame({"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
-                       "vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2],
-                       "phase_shifts":phase_shifts, "phase_shifts_errors":phase_shifts_err,
-                       "interference_flag":interference_flag})
-    return df
+        data = {"states":states, "x":positions[:,0], "y":positions[:,1], "z":positions[:,2],
+                "phase_shifts":phase_shifts, "phase_shifts_errors":phase_shifts_err,
+                "interference_flag":interference_flag}
+
+    if velocities is not None:
+        data.update({"vx":velocities[:,0], "vy":velocities[:,1], "vz":velocities[:,2]})
+    return pd.DataFrame(data)
 
 def concat_datasets(filepaths, output_filepath):
     # Empty list to collect DataFrames
@@ -53,7 +54,8 @@ def concat_datasets(filepaths, output_filepath):
         if "probabilities" in concatenated_df.columns:
             h5f.create_dataset("states", data=concatenated_df["states"].values)
             h5f.create_dataset("positions", data=concatenated_df[["x", "y", "z"]].values)
-            h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
+            if {"vx", "vy", "vz"}.issubset(concatenated_df.columns):
+                h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
             h5f.create_dataset("probabilities", data=concatenated_df["probabilities"].values)
             h5f.create_dataset("interferingFlag", data=concatenated_df["interference_flag"].values)
             h5f.create_dataset("phaseShifts", data=concatenated_df["phase_shifts"].values)
@@ -61,7 +63,8 @@ def concat_datasets(filepaths, output_filepath):
         else:
             h5f.create_dataset("states", data=concatenated_df["states"].values)
             h5f.create_dataset("positions", data=concatenated_df[["x", "y", "z"]].values)
-            h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
+            if {"vx", "vy", "vz"}.issubset(concatenated_df.columns):
+                h5f.create_dataset("velocities", data=concatenated_df[["vx", "vy", "vz"]].values)
             h5f.create_dataset("phaseShifts", data=concatenated_df["phase_shifts"].values)
             h5f.create_dataset("phaseShiftErrors", data=concatenated_df["phase_shifts_errors"].values)
             h5f.create_dataset("interferingFlag", data=concatenated_df["interference_flag"].values)

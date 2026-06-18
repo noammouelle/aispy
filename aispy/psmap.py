@@ -409,18 +409,40 @@ class PSMAPSurrogate:
     def generate_atoms(self, mu_x0, mu_y0, mu_vx0, mu_vy0,
                        sigma_x, sigma_y, sigma_vx, sigma_vy,
                        phi0=0.0, natoms=100_000,
-                       phase_profile=None, rng=None):
+                       phase_profile=None, rng=None,
+                       _return_arrays=False):
         """
         Sample atoms from a Gaussian cloud and return synthetic observations.
 
-        GPU pipeline (when CuPy is available)
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        Because ais++ prunes all but the two main interferometry paths
+        (usepathselection 1), p0 + p1 ≤ 1 in general — the deficit
+        1 - p0 - p1 is probability that ended up in pruned paths, i.e.
+        atoms that would not be detected.  The correct sampling is therefore
+        a three-outcome draw per atom:
+          - detected in ground state  with prob p0
+          - detected in excited state with prob p1
+          - not detected (lost)       with prob 1 - p0 - p1
+
+        Only detected atoms are returned, so the output DataFrame has fewer
+        than ``natoms`` rows in general.  ``prob_det`` gives the detection
+        probability for each returned atom (useful for importance weighting);
+        ``prob_s0`` is the conditional ground-state probability p0/(p0+p1).
+
+        GPU fast path (use_gpu=True and _return_arrays=True)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        1. GPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
+        2. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
+        3. GPU  — port probabilities; detection + state Bernoulli draws.
+        4. CPU  — device→host for detected atoms only (state, xf, yf).
+
+        GPU DataFrame path (use_gpu=True and _return_arrays=False)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         1. CPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
         2. CPU  — evaluate phase_profile(xf, yf, vxf, vyf) if provided.
         3. GPU  — host→device transfer.
         4. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
-        5. GPU  — _port_prob and Bernoulli sampling.
-        6. CPU  — device→host transfer of state, prob_s0.
+        5. GPU  — port probabilities; detection + state Bernoulli draws.
+        6. CPU  — device→host; filter to detected atoms only.
 
         Parameters
         ----------
@@ -429,23 +451,88 @@ class PSMAPSurrogate:
         sigma_x, sigma_y     : float  Cloud 1σ position spreads [m]
         sigma_vx, sigma_vy   : float  Cloud 1σ velocity spreads [m/s]
         phi0                 : float  Global phase offset [rad]
-        natoms               : int    Number of atoms to simulate
+        natoms               : int    Number of atoms launched (detected count
+                                      will be lower)
         phase_profile        : callable or None
             ``f(xf, yf, vxf, vyf) -> array (natoms,)`` [rad].
         rng                  : numpy Generator, int seed, or None
+        _return_arrays       : bool
+            When True, return (states, xf, yf) as numpy arrays instead of a
+            DataFrame.  Enables the GPU fast path (no H2D transfer, minimal
+            D2H).  Ignored when use_gpu=False.
 
         Returns
         -------
-        pandas.DataFrame with columns:
-            x0, y0, vx0, vy0   Initial phase-space coordinates [m, m/s]
-            xf, yf, vxf, vyf   Final transverse coordinates [m, m/s]
-            state               Output internal state (0=ground, 1=excited)
-            prob_s0             Probability of ground state for this atom
+        If _return_arrays=False (default):
+            pandas.DataFrame (detected atoms only) with columns:
+                x0, y0, vx0, vy0   Initial phase-space coordinates [m, m/s]
+                xf, yf, vxf, vyf   Final transverse coordinates [m, m/s]
+                state               Detected output state (0=ground, 1=excited)
+                prob_s0             Conditional P(ground | detected) = p0/(p0+p1)
+                prob_det            Detection probability p0 + p1 for this atom
+        If _return_arrays=True:
+            tuple (states, xf, yf) — numpy arrays for detected atoms only.
+                states : int8  (0=ground, 1=excited)
+                xf     : float64  final x position [m]
+                yf     : float64  final y position [m]
         """
-        import pandas as pd
-
         if not isinstance(rng, np.random.Generator):
             rng = np.random.default_rng(rng)
+
+        # ── GPU fast path: sample on GPU, return minimal arrays ───────────────
+        if self._use_gpu and _return_arrays:
+            x0_g  = cp.random.normal(mu_x0,  sigma_x,  natoms, dtype=cp.float64)
+            y0_g  = cp.random.normal(mu_y0,  sigma_y,  natoms, dtype=cp.float64)
+            vx0_g = cp.random.normal(mu_vx0, sigma_vx, natoms, dtype=cp.float64)
+            vy0_g = cp.random.normal(mu_vy0, sigma_vy, natoms, dtype=cp.float64)
+            xf_g  = x0_g + vx0_g * self.t_det
+            yf_g  = y0_g + vy0_g * self.t_det
+
+            out_frac = float(cp.mean(
+                (x0_g  < self.xs[0])  | (x0_g  > self.xs[-1])  |
+                (y0_g  < self.ys[0])  | (y0_g  > self.ys[-1])  |
+                (vx0_g < self.vxs[0]) | (vx0_g > self.vxs[-1]) |
+                (vy0_g < self.vys[0]) | (vy0_g > self.vys[-1])
+            ))
+            if out_frac > 0.01:
+                warnings.warn(
+                    f'{out_frac*100:.1f}% of sampled atoms lie outside the '
+                    f'PSMAP grid. Regenerate the PSMAP with a wider grid.',
+                    stacklevel=2)
+
+            if phase_profile is not None:
+                delta_g = cp.asarray(np.asarray(
+                    phase_profile(cp.asnumpy(xf_g), cp.asnumpy(yf_g),
+                                  cp.asnumpy(vx0_g), cp.asnumpy(vy0_g)),
+                    dtype=np.float64))
+            else:
+                delta_g = cp.zeros(natoms, dtype=cp.float64)
+
+            dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_g, y0_g, vx0_g, vy0_g)
+            total_phase = dphi_g + (delta_g + phi0)[:, None]
+            probs = _port_prob(amp0_g, amp1_g, dphi_g,
+                               self._port_inter_gpu[None, :],
+                               delta=total_phase - dphi_g)
+            s0_mask    = (self._port_states_gpu == 0)
+            p0         = cp.clip(probs[:, s0_mask ].sum(axis=1), 0.0, None)
+            p1         = cp.clip(probs[:, ~s0_mask].sum(axis=1), 0.0, None)
+            prob_det_g = cp.clip(p0 + p1, 0.0, 1.0)
+
+            u1         = cp.random.random(natoms, dtype=cp.float64)
+            u2         = cp.random.random(natoms, dtype=cp.float64)
+            det_mask_g = u1 < prob_det_g
+            prob_s0_g  = cp.where(prob_det_g > 0,
+                                  p0 / cp.maximum(prob_det_g, 1e-300), 0.5)
+            state_g    = (u2 > prob_s0_g).astype(cp.int8)
+
+            return (
+                cp.asnumpy(state_g[det_mask_g]),
+                cp.asnumpy(xf_g[det_mask_g]),
+                cp.asnumpy(yf_g[det_mask_g]),
+            )
+
+        # ── Standard path: CPU sampling ───────────────────────────────────────
+        import pandas as pd
 
         # ── 1. Sample + free-flight kinematic map (CPU) ───────────────────────
         x0  = rng.normal(mu_x0,  sigma_x,  natoms)
@@ -462,6 +549,25 @@ class PSMAPSurrogate:
                     if phase_profile is not None
                     else np.zeros(natoms, dtype=np.float64))
 
+        axes_info = [
+            (x0,  self.xs,  'x0',  1e6, 'µm'),
+            (y0,  self.ys,  'y0',  1e6, 'µm'),
+            (vx0, self.vxs, 'vx0', 1e3, 'mm/s'),
+            (vy0, self.vys, 'vy0', 1e3, 'mm/s'),
+        ]
+        out_frac = np.mean([
+            (arr < ax[0]) | (arr > ax[-1])
+            for arr, ax, *_ in axes_info
+        ])
+        if out_frac > 0.01:
+            details = ', '.join(
+                f'{name} ∈ [{ax[0]*scale:.2f}, {ax[-1]*scale:.2f}] {unit}'
+                for _, ax, name, scale, unit in axes_info)
+            warnings.warn(
+                f'{out_frac*100:.1f}% of sampled atoms lie outside the PSMAP '
+                f'grid ({details}). Regenerate the PSMAP with a wider grid.',
+                stacklevel=3)
+
         if self._use_gpu:
             # ── 3. Host → device ─────────────────────────────────────────────
             x0_g  = cp.asarray(x0,       dtype=cp.float64)
@@ -473,18 +579,28 @@ class PSMAPSurrogate:
             # ── 4. GPU quadrilinear interpolation ─────────────────────────────
             dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_g, y0_g, vx0_g, vy0_g)
 
-            # ── 5. Port probabilities + Bernoulli sampling ────────────────────
+            # ── 5. Port probabilities ─────────────────────────────────────────
             total_phase = dphi_g + (delta_g + phi0)[:, None]
-            probs   = _port_prob(amp0_g, amp1_g, dphi_g,
-                                 self._port_inter_gpu[None, :],
-                                 delta=total_phase - dphi_g)
+            probs = _port_prob(amp0_g, amp1_g, dphi_g,
+                               self._port_inter_gpu[None, :],
+                               delta=total_phase - dphi_g)
             s0_mask = (self._port_states_gpu == 0)
-            prob_s0 = cp.clip(probs[:, s0_mask].sum(axis=1), 0.0, 1.0)
-            state   = (cp.random.random(natoms, dtype=cp.float64) > prob_s0).astype(cp.int8)
+            p0 = cp.clip(probs[:, s0_mask ].sum(axis=1), 0.0, None)
+            p1 = cp.clip(probs[:, ~s0_mask].sum(axis=1), 0.0, None)
+            prob_det_g = cp.clip(p0 + p1, 0.0, 1.0)
 
-            # ── 6. Device → host ─────────────────────────────────────────────
-            prob_s0_np = cp.asnumpy(prob_s0)
-            state_np   = cp.asnumpy(state)
+            u1 = cp.random.random(natoms, dtype=cp.float64)
+            u2 = cp.random.random(natoms, dtype=cp.float64)
+            det_mask_g = u1 < prob_det_g
+            prob_s0_cond_g = cp.where(prob_det_g > 0,
+                                      p0 / cp.maximum(prob_det_g, 1e-300), 0.5)
+            state_g = (u2 > prob_s0_cond_g).astype(cp.int8)
+
+            # ── 6. Device → host; keep only detected atoms ────────────────────
+            det_mask_np    = cp.asnumpy(det_mask_g)
+            state_np       = cp.asnumpy(state_g)[det_mask_np]
+            prob_s0_np     = cp.asnumpy(prob_s0_cond_g)[det_mask_np]
+            prob_det_np    = cp.asnumpy(prob_det_g)[det_mask_np]
 
         else:
             pts = np.column_stack([x0, y0, vx0, vy0])
@@ -500,15 +616,31 @@ class PSMAPSurrogate:
                 amp1_np[:, pi] = self._interp_amp1[pi](pts)
 
             total_phase = dphi_np + (delta_np + phi0)[:, None]
-            probs   = _port_prob(amp0_np, amp1_np, dphi_np,
-                                 self.port_interfering[None, :],
-                                 delta=total_phase - dphi_np)
-            s0_mask    = (self.port_states == 0)
-            prob_s0_np = np.clip(probs[:, s0_mask].sum(axis=1), 0.0, 1.0)
-            state_np   = (rng.uniform(size=natoms) > prob_s0_np).astype(np.int8)
+            probs = _port_prob(amp0_np, amp1_np, dphi_np,
+                               self.port_interfering[None, :],
+                               delta=total_phase - dphi_np)
+            s0_mask  = (self.port_states == 0)
+            p0 = np.clip(probs[:, s0_mask ].sum(axis=1), 0.0, None)
+            p1 = np.clip(probs[:, ~s0_mask].sum(axis=1), 0.0, None)
+            prob_det_np = np.clip(p0 + p1, 0.0, 1.0)
+
+            u1 = rng.uniform(size=natoms)
+            u2 = rng.uniform(size=natoms)
+            det_mask_np = u1 < prob_det_np
+            prob_s0_np  = np.where(prob_det_np > 0,
+                                   p0 / np.maximum(prob_det_np, 1e-300), 0.5)
+            state_np    = (u2 > prob_s0_np).astype(np.int8)
+
+            state_np    = state_np[det_mask_np]
+            prob_s0_np  = prob_s0_np[det_mask_np]
+            prob_det_np = prob_det_np[det_mask_np]
 
         return pd.DataFrame({
-            'x0': x0,  'y0': y0,  'vx0': vx0,  'vy0': vy0,
-            'xf': xf,  'yf': yf,  'vxf': vxf,  'vyf': vyf,
-            'state': state_np, 'prob_s0': prob_s0_np,
+            'x0':  x0[det_mask_np],  'y0':  y0[det_mask_np],
+            'vx0': vx0[det_mask_np], 'vy0': vy0[det_mask_np],
+            'xf':  xf[det_mask_np],  'yf':  yf[det_mask_np],
+            'vxf': vxf[det_mask_np], 'vyf': vyf[det_mask_np],
+            'state':    state_np,
+            'prob_s0':  prob_s0_np,
+            'prob_det': prob_det_np,
         })
