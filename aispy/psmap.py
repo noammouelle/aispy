@@ -97,7 +97,7 @@ def _port_prob(amp0, amp1, dphi, is_interfering, delta=0.0):
             + is_interfering * 2.0 * amp0 * amp1 * xp.cos(dphi + delta))
 
 
-# ── GPU N-linear interpolation on a regular grid ──────────────────────────────
+# ── GPU interpolation on a regular grid ──────────────────────────────────────
 
 def _find_cell(arr, lo, dx, n):
     """
@@ -110,6 +110,20 @@ def _find_cell(arr, lo, dx, n):
     idx = xp.clip(raw.astype(xp.int32), 0, n - 2)
     tx  = xp.clip(raw - idx.astype(xp.float64), 0.0, 1.0)
     return idx, tx
+
+
+def _catmull_weights(t, xp=np):
+    """
+    Catmull-Rom cubic spline weights for stencil offsets [-1, 0, 1, 2].
+    Returns a list of four arrays [w_m1, w_0, w_1, w_2] each shaped like *t*.
+    """
+    t2 = t * t; t3 = t2 * t
+    return [
+        -0.5*t  +      t2 - 0.5*t3,
+         1.0    - 2.5 *t2 + 1.5*t3,
+         0.5*t  + 2.0 *t2 - 1.5*t3,
+                - 0.5 *t2 + 0.5*t3,
+    ]
 
 
 def _quadrilinear(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy):
@@ -130,6 +144,32 @@ def _quadrilinear(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy):
                     corner = grid[ix+bx, iy+by, ivx+bvx, ivy+bvy]
                     term   = wx * wy * wvx * wvy * corner
                     result = term if result is None else result + term
+    return result
+
+
+def _quarticubic(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy, nx, ny, nvx, nvy):
+    """
+    Catmull-Rom cubic interpolation on a 4D grid (x, y, vx, vy).
+    Uses a 4^4 = 256-corner stencil with clamped boundary conditions.
+    All arrays may be cupy or numpy.
+    """
+    xp  = _get_xp(grid)
+    wx  = _catmull_weights(tx,  xp)
+    wy  = _catmull_weights(ty,  xp)
+    wvx = _catmull_weights(tvx, xp)
+    wvy = _catmull_weights(tvy, xp)
+    result = None
+    for bx in range(4):
+        jx = xp.clip(ix + bx - 1, 0, nx - 1)
+        for by in range(4):
+            jy = xp.clip(iy + by - 1, 0, ny - 1)
+            for bvx in range(4):
+                jvx = xp.clip(ivx + bvx - 1, 0, nvx - 1)
+                for bvy in range(4):
+                    jvy = xp.clip(ivy + bvy - 1, 0, nvy - 1)
+                    corner = grid[jx, jy, jvx, jvy]
+                    w      = wx[bx] * wy[by] * wvx[bvx] * wvy[bvy]
+                    result = w * corner if result is None else result + w * corner
     return result
 
 
@@ -248,7 +288,7 @@ class PSMAPSurrogate:
                 d - (c[0] + c[1]*X0g + c[2]*Y0g + c[3]*VX0g + c[4]*VY0g))
 
         # CPU interpolators (scipy handles N-D natively)
-        kw = dict(method='linear', bounds_error=False, fill_value=None)
+        kw = dict(method='cubic', bounds_error=False, fill_value=None)
         axes = (self.xs, self.ys, self.vxs, self.vys)
         self._interp_dphi = [
             RegularGridInterpolator(axes, dphi_resid[:,:,:,:,pi], **kw)
@@ -319,7 +359,7 @@ class PSMAPSurrogate:
     # ── Evaluation ───────────────────────────────────────────────────────────
 
     def _eval_gpu(self, x0_g, y0_g, vx0_g, vy0_g):
-        """Quadrilinear interpolation on GPU."""
+        """Catmull-Rom cubic interpolation on GPU."""
         ix,  tx  = _find_cell(x0_g,  self._x_lo,  self._dx,  self.nx)
         iy,  ty  = _find_cell(y0_g,  self._y_lo,  self._dy,  self.ny)
         ivx, tvx = _find_cell(vx0_g, self._vx_lo, self._dvx, self.nvx)
@@ -330,16 +370,17 @@ class PSMAPSurrogate:
         amp0_out = cp.empty((N, self.nP), dtype=cp.float64)
         amp1_out = cp.empty((N, self.nP), dtype=cp.float64)
 
+        dims = (self.nx, self.ny, self.nvx, self.nvy)
         for pi in range(self.nP):
             c = self._dphi_linear[pi]
             dphi_out[:, pi] = (
-                _quadrilinear(self._gpu_dphi_resid[pi],
-                              ix, iy, ivx, ivy, tx, ty, tvx, tvy)
+                _quarticubic(self._gpu_dphi_resid[pi],
+                             ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
                 + c[0] + c[1]*x0_g + c[2]*y0_g + c[3]*vx0_g + c[4]*vy0_g)
-            amp0_out[:, pi] = _quadrilinear(
-                self._gpu_amp0[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy)
-            amp1_out[:, pi] = _quadrilinear(
-                self._gpu_amp1[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy)
+            amp0_out[:, pi] = _quarticubic(
+                self._gpu_amp0[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
+            amp1_out[:, pi] = _quarticubic(
+                self._gpu_amp1[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
 
         return dphi_out, amp0_out, amp1_out
 
