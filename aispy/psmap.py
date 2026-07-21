@@ -264,46 +264,32 @@ class PSMAPSurrogate:
         self.port_path0 = psmap['path0'][first[0]:first[0]+nP]
         self.port_path1 = psmap['path1'][first[0]:first[0]+nP]
 
-        # Decompose dphi into a 4D linear trend + smooth residual.
-        # The linear part is evaluated analytically at query points;
-        # the residual is what the interpolator sees (much smoother).
         shape = (self.nx, self.ny, self.nvx, self.nvy)
         X0g  = self.xs [:, None, None, None] * np.ones(shape)
         Y0g  = self.ys [None, :, None, None] * np.ones(shape)
         VX0g = self.vxs[None, None, :, None] * np.ones(shape)
         VY0g = self.vys[None, None, None, :] * np.ones(shape)
 
-        self._dphi_linear = np.zeros((nP, 5))  # [c0, cx, cy, cvx, cvy]
-        dphi_resid = np.empty_like(dphi)
-
-        x0f  = X0g.ravel();  y0f  = Y0g.ravel()
-        vx0f = VX0g.ravel(); vy0f = VY0g.ravel()
-        A = np.column_stack([np.ones(n_atoms), x0f, y0f, vx0f, vy0f])
-
-        for pi in range(nP):
-            d = dphi[:, :, :, :, pi]
-            c, *_ = np.linalg.lstsq(A, d.ravel(), rcond=None)
-            self._dphi_linear[pi] = c
-            dphi_resid[:, :, :, :, pi] = (
-                d - (c[0] + c[1]*X0g + c[2]*Y0g + c[3]*VX0g + c[4]*VY0g))
-
         # CPU interpolators (scipy handles N-D natively)
-        kw = dict(method='cubic', bounds_error=False, fill_value=None)
         axes = (self.xs, self.ys, self.vxs, self.vys)
         self._interp_dphi = [
-            RegularGridInterpolator(axes, dphi_resid[:,:,:,:,pi], **kw)
+            RegularGridInterpolator(axes, dphi[:,:,:,:,pi],
+                                    method='cubic', bounds_error=False, fill_value=None)
             for pi in range(nP)]
+        # Amplitudes are zeroed outside the grid (no extrapolation).
         self._interp_amp0 = [
-            RegularGridInterpolator(axes, amp0[:,:,:,:,pi], **kw)
+            RegularGridInterpolator(axes, amp0[:,:,:,:,pi],
+                                    method='cubic', bounds_error=False, fill_value=0.0)
             for pi in range(nP)]
         self._interp_amp1 = [
-            RegularGridInterpolator(axes, amp1[:,:,:,:,pi], **kw)
+            RegularGridInterpolator(axes, amp1[:,:,:,:,pi],
+                                    method='cubic', bounds_error=False, fill_value=0.0)
             for pi in range(nP)]
 
         # GPU: upload 4D grids once at construction time
         if self._use_gpu:
-            self._gpu_dphi_resid = [
-                cp.asarray(dphi_resid[:,:,:,:,pi], dtype=cp.float64)
+            self._gpu_dphi = [
+                cp.asarray(dphi[:,:,:,:,pi], dtype=cp.float64)
                 for pi in range(nP)]
             self._gpu_amp0 = [
                 cp.asarray(amp0[:,:,:,:,pi], dtype=cp.float64)
@@ -372,15 +358,22 @@ class PSMAPSurrogate:
 
         dims = (self.nx, self.ny, self.nvx, self.nvy)
         for pi in range(self.nP):
-            c = self._dphi_linear[pi]
-            dphi_out[:, pi] = (
-                _quarticubic(self._gpu_dphi_resid[pi],
-                             ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
-                + c[0] + c[1]*x0_g + c[2]*y0_g + c[3]*vx0_g + c[4]*vy0_g)
+            dphi_out[:, pi] = _quarticubic(
+                self._gpu_dphi[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
             amp0_out[:, pi] = _quarticubic(
                 self._gpu_amp0[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
             amp1_out[:, pi] = _quarticubic(
                 self._gpu_amp1[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
+
+        # Zero amplitudes outside the grid — dphi extrapolation is irrelevant there.
+        out_mask = (
+            (x0_g  < self.xs[0])  | (x0_g  > self.xs[-1])  |
+            (y0_g  < self.ys[0])  | (y0_g  > self.ys[-1])  |
+            (vx0_g < self.vxs[0]) | (vx0_g > self.vxs[-1]) |
+            (vy0_g < self.vys[0]) | (vy0_g > self.vys[-1])
+        )
+        amp0_out[out_mask] = 0.0
+        amp1_out[out_mask] = 0.0
 
         return dphi_out, amp0_out, amp1_out
 
@@ -406,25 +399,6 @@ class PSMAPSurrogate:
         vx0_arr = np.asarray(vx0_arr, dtype=float)
         vy0_arr = np.asarray(vy0_arr, dtype=float)
 
-        axes_info = [
-            (x0_arr,  self.xs,  'x0',  1e6, 'µm'),
-            (y0_arr,  self.ys,  'y0',  1e6, 'µm'),
-            (vx0_arr, self.vxs, 'vx0', 1e3, 'mm/s'),
-            (vy0_arr, self.vys, 'vy0', 1e3, 'mm/s'),
-        ]
-        out_frac = np.mean([
-            (arr < ax[0]) | (arr > ax[-1])
-            for arr, ax, *_ in axes_info
-        ])
-        if out_frac > 0.01:
-            details = ', '.join(
-                f'{name} ∈ [{ax[0]*scale:.2f}, {ax[-1]*scale:.2f}] {unit}'
-                for _, ax, name, scale, unit in axes_info)
-            warnings.warn(
-                f'{out_frac*100:.1f}% of sampled atoms lie outside the PSMAP '
-                f'grid ({details}). Regenerate the PSMAP with a wider grid.',
-                stacklevel=3)
-
         if self._use_gpu:
             dphi_g, amp0_g, amp1_g = self._eval_gpu(
                 cp.asarray(x0_arr),  cp.asarray(y0_arr),
@@ -437,10 +411,7 @@ class PSMAPSurrogate:
         amp0_out = np.empty((N, self.nP))
         amp1_out = np.empty((N, self.nP))
         for pi in range(self.nP):
-            c = self._dphi_linear[pi]
-            dphi_out[:, pi] = (self._interp_dphi[pi](pts)
-                               + c[0] + c[1]*x0_arr + c[2]*y0_arr
-                               + c[3]*vx0_arr + c[4]*vy0_arr)
+            dphi_out[:, pi] = self._interp_dphi[pi](pts)
             amp0_out[:, pi] = self._interp_amp0[pi](pts)
             amp1_out[:, pi] = self._interp_amp1[pi](pts)
         return dphi_out, amp0_out, amp1_out
@@ -552,18 +523,6 @@ class PSMAPSurrogate:
             xf_g  = x0_g + vx0_g * self.t_det
             yf_g  = y0_g + vy0_g * self.t_det
 
-            out_frac = float(cp.mean(
-                (x0_g  < self.xs[0])  | (x0_g  > self.xs[-1])  |
-                (y0_g  < self.ys[0])  | (y0_g  > self.ys[-1])  |
-                (vx0_g < self.vxs[0]) | (vx0_g > self.vxs[-1]) |
-                (vy0_g < self.vys[0]) | (vy0_g > self.vys[-1])
-            ))
-            if out_frac > 0.01:
-                warnings.warn(
-                    f'{out_frac*100:.1f}% of sampled atoms lie outside the '
-                    f'PSMAP grid. Regenerate the PSMAP with a wider grid.',
-                    stacklevel=2)
-
             if phase_profile is not None:
                 delta_g = cp.asarray(np.asarray(
                     phase_profile(cp.asnumpy(xf_g), cp.asnumpy(yf_g),
@@ -624,25 +583,6 @@ class PSMAPSurrogate:
                     if phase_profile is not None
                     else np.zeros(natoms, dtype=np.float64))
 
-        axes_info = [
-            (x0,  self.xs,  'x0',  1e6, 'µm'),
-            (y0,  self.ys,  'y0',  1e6, 'µm'),
-            (vx0, self.vxs, 'vx0', 1e3, 'mm/s'),
-            (vy0, self.vys, 'vy0', 1e3, 'mm/s'),
-        ]
-        out_frac = np.mean([
-            (arr < ax[0]) | (arr > ax[-1])
-            for arr, ax, *_ in axes_info
-        ])
-        if out_frac > 0.01:
-            details = ', '.join(
-                f'{name} ∈ [{ax[0]*scale:.2f}, {ax[-1]*scale:.2f}] {unit}'
-                for _, ax, name, scale, unit in axes_info)
-            warnings.warn(
-                f'{out_frac*100:.1f}% of sampled atoms lie outside the PSMAP '
-                f'grid ({details}). Regenerate the PSMAP with a wider grid.',
-                stacklevel=3)
-
         if self._use_gpu:
             # ── 3. Host → device ─────────────────────────────────────────────
             x0_g  = cp.asarray(x0,       dtype=cp.float64)
@@ -683,10 +623,7 @@ class PSMAPSurrogate:
             amp0_np = np.empty((natoms, self.nP))
             amp1_np = np.empty((natoms, self.nP))
             for pi in range(self.nP):
-                c = self._dphi_linear[pi]
-                dphi_np[:, pi] = (self._interp_dphi[pi](pts)
-                                  + c[0] + c[1]*x0 + c[2]*y0
-                                  + c[3]*vx0 + c[4]*vy0)
+                dphi_np[:, pi] = self._interp_dphi[pi](pts)
                 amp0_np[:, pi] = self._interp_amp0[pi](pts)
                 amp1_np[:, pi] = self._interp_amp1[pi](pts)
 
