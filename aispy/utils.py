@@ -99,7 +99,13 @@ class AISFlow():
 
     def _write_potential_params(self):
         self.aisi_file.write('# Potential parameters\n')
-        self.aisi_file.write('utype {}\n\n'.format(self.potential_params['utype']))
+        self.aisi_file.write('utype {}\n'.format(self.potential_params['utype']))
+        # Frame angular velocity, rad/s. Only meaningful for the rotating_*
+        # potentials; ais++ rejects it for the inertial ones.
+        rotation = self.potential_params.get('rotation')
+        if rotation is not None:
+            self.aisi_file.write('rotation {} {} {}\n'.format(*rotation))
+        self.aisi_file.write('\n')
 
     def _write_simulation_params(self):
         f = self.aisi_file
