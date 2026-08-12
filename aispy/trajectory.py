@@ -631,6 +631,12 @@ def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
     com = 0.5 * (loops['upper'] + loops['lower'])
     delta = loops['upper'] - loops['lower']
 
+    # residual arm separation at recombination: zero only for a perfectly closed
+    # interferometer, which a rotating frame does not give you for free
+    gap_vec = delta[-1]
+    gap = float(np.linalg.norm(gap_vec))
+    factors = []
+
     for ax, plane in zip(axes, planes):
         i, j = idx[plane[0]], idx[plane[1]]
 
@@ -648,6 +654,7 @@ def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
         else:
             factor = float(exaggerate)
         factor = max(factor, 1.0)
+        factors.append(factor)
 
         up = com + 0.5 * factor * delta
         lo = com - 0.5 * factor * delta
@@ -688,11 +695,15 @@ def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
     if title is None:
         title = (f'Interferometer arms in position space   '
                  f'$\\Omega$ = ({sag[0]:.3g}, {sag[1]:.3g}, {sag[2]:.3g}) rad/s   '
-                 f'$\\Delta\\varphi_{{Sagnac}}$ = {dphi:.4g} rad')
+                 f'$\\Delta\\varphi_{{Sagnac}}$ = {dphi:.4g} rad   '
+                 f'arm gap at recombination = {gap:.3g} m')
     fig.suptitle(title, fontsize=10)
     fig.tight_layout()
 
-    return fig, axes, {'area': area, 'rotation': sag, 'sagnac_phase': dphi}
+    return fig, axes, {'area': area, 'rotation': sag, 'sagnac_phase': dphi,
+                       'gap': gap, 'gap_vector': gap_vec,
+                       'max_separation': float(np.max(np.linalg.norm(delta, axis=1))),
+                       'exaggeration': factors}
 
 
 def plot_loop_comparison(entries, potential='linear_pot', n_interp=200,
@@ -737,9 +748,16 @@ def plot_loop_comparison(entries, potential='linear_pot', n_interp=200,
                                             sagnac_rotation=sagnac_rotation,
                                             axes=[ax], title='')
         dphi = info['sagnac_phase']
-        ax.set_title(f'{label}\n$\\Delta\\varphi_{{Sagnac}}$ = {dphi:.3e} rad',
+        # keep the exaggeration factor visible: without it the arms look metres
+        # apart when they are in fact millimetres apart
+        ax.set_title(f'{label}\n$\\Delta\\varphi_{{Sagnac}}$ = {dphi:.3e} rad\n'
+                     f'max arm sep. {info["max_separation"]*1e3:.2f} mm, '
+                     f'drawn $\\times${info["exaggeration"][0]:.0g}',
                      fontsize=9)
-        rows.append({'label': label, 'area': info['area'], 'sagnac_phase': dphi})
+        rows.append({'label': label, 'area': info['area'], 'sagnac_phase': dphi,
+                     'gap': info['gap'],
+                     'max_separation': info['max_separation'],
+                     'exaggeration': info['exaggeration'][0]})
 
     fig.suptitle('Enclosed area vs number of loops — successive loops reverse '
                  'the circulation, so even loop counts cancel', fontsize=10)
