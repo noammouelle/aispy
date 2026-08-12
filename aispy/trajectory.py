@@ -559,7 +559,7 @@ def _auto_scale(values):
 def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
                            n_interp=200, figsize=(13, 4.2), planes=('xy', 'xz', 'yz'),
                            shade_area=True, rotation=None, sagnac_rotation=None,
-                           exaggerate='auto', axes=None, title=None):
+                           exaggerate=1, axes=None, title=None):
     """
     Plot the two interferometer arms as position-space traces, projected onto
     the requested coordinate planes.
@@ -577,12 +577,14 @@ def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
     n_interp   : int   — interpolation points per free-flight segment
     planes     : tuple — any of ``'xy'``, ``'xz'``, ``'yz'``
     shade_area : bool  — fill the enclosed loop and annotate its projected area
-    exaggerate : ``'auto'``, or a float — factor by which the arm separation is
-        blown up about the mean arm before drawing. The arms are typically ~10⁶
-        times closer together than the trajectory is long, so at true scale
-        (``exaggerate=1``) the loop collapses to a line. The factor is chosen
-        per panel and stated in its title; the quoted areas are always the true
-        ones.
+    exaggerate : float, or ``'auto'`` — factor by which the arm separation is
+        blown up about the mean arm before drawing. **Defaults to 1, i.e. true
+        scale**, which is what you want for anything quantitative. With a single
+        photon recoil the arms end up ~10⁶ times closer together than the
+        trajectory is long and the loop collapses to a line; the right fix is
+        LMT (``lmt_order`` in the sequence), which multiplies the separation by
+        the LMT order, not a drawing trick. ``'auto'`` picks a round factor per
+        panel and states it in the title — use it only for schematics.
     rotation   : (3,) array or None — the rate the run was *simulated* at, used
                  to reconstruct the free flight. ``None`` takes ``traj['rotation']``.
                  Overriding it to something the data was not generated with will
@@ -680,7 +682,8 @@ def plot_trajectory_planes(traj_or_file, atom_idx=0, potential='linear_pot',
         ax.set_ylabel(f'${plane[1]}$ [{uj}]')
 
         a_n = area[normal[plane]]
-        exag = '' if factor == 1.0 else f'   (separation $\\times${factor:.0g})'
+        exag = ('   (true scale)' if factor == 1.0
+                else f'   (separation $\\times${factor:.0g})')
         ax.set_title(f'{plane[0]}–{plane[1]} plane   $A_{{{"xyz"[normal[plane]]}}}$ = '
                      f'{a_n:.3e} m$^2${exag}', fontsize=9)
         ax.grid(alpha=0.25, lw=0.5)
@@ -750,9 +753,10 @@ def plot_loop_comparison(entries, potential='linear_pot', n_interp=200,
         dphi = info['sagnac_phase']
         # keep the exaggeration factor visible: without it the arms look metres
         # apart when they are in fact millimetres apart
+        f = info['exaggeration'][0]
+        scale = 'true scale' if f == 1.0 else f'drawn $\\times${f:.0g}'
         ax.set_title(f'{label}\n$\\Delta\\varphi_{{Sagnac}}$ = {dphi:.3e} rad\n'
-                     f'max arm sep. {info["max_separation"]*1e3:.2f} mm, '
-                     f'drawn $\\times${info["exaggeration"][0]:.0g}',
+                     f'max arm sep. {info["max_separation"]*1e3:.1f} mm, {scale}',
                      fontsize=9)
         rows.append({'label': label, 'area': info['area'], 'sagnac_phase': dphi,
                      'gap': info['gap'],
