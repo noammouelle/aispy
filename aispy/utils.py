@@ -242,33 +242,41 @@ class AISFlow():
             )
 
         # --- sampled beam file ---
+        # ais++'s parser (AISDataIO.cc StrArrayParamsKeys) requires
+        # beaminterpolationparamsfilenames unconditionally, for every wtype --
+        # so this must always be written (empty string when unused), or ais++
+        # aborts with "Missing string array parameter: ..." even for ordinary
+        # gaussian/flat_square/confocal runs.
         beam_file = self.pulse_params.get('beam_file')
-        if wtype == 'interpolated':
-            if not beam_file:
-                raise ValueError(
-                    "wtype='interpolated' requires pulse_params['beam_file'], the "
-                    "HDF5 grid written by aisoptics' AISPPExporter."
-                )
-            self.aisi_file.write(
-                "beaminterpolationparamsfilenames " + " ".join(str(beam_file) for _ in range(N)) + " \n"
+        if wtype == 'interpolated' and not beam_file:
+            raise ValueError(
+                "wtype='interpolated' requires pulse_params['beam_file'], the "
+                "HDF5 grid written by aisoptics' AISPPExporter."
             )
-        elif beam_file:
+        if wtype != 'interpolated' and beam_file:
             raise ValueError(
                 f"pulse_params['beam_file'] is set but wtype is {wtype!r}; the file "
                 f"would be ignored. Set wtype='interpolated' to use it."
             )
+        self.aisi_file.write(
+            "beaminterpolationparamsfilenames " + " ".join(str(beam_file or '') for _ in range(N)) + " \n"
+        )
 
         # --- tip/tilt, degrees ---
+        # ais++'s parser (AISDataIO.cc DoubleArrayParamsKeys) requires
+        # tiptiltx/tiptilty unconditionally, for every wtype -- not just when
+        # they're nonzero -- so these must always be written, or ais++ aborts
+        # with "Missing double array parameter: tiptiltx" even for ordinary
+        # gaussian/flat_square/confocal runs.
         tiptiltx = self.pulse_params.get('tiptiltx', 0.0)
         tiptilty = self.pulse_params.get('tiptilty', 0.0)
-        if tiptiltx or tiptilty:
-            if wtype != 'interpolated':
-                raise ValueError(
-                    f"tiptiltx/tiptilty are only applied to wtype='interpolated' "
-                    f"beams, but wtype is {wtype!r}; they would be ignored."
-                )
-            self.aisi_file.write("tiptiltx " + " ".join(str(tiptiltx) for _ in range(N)) + " \n")
-            self.aisi_file.write("tiptilty " + " ".join(str(tiptilty) for _ in range(N)) + " \n")
+        if (tiptiltx or tiptilty) and wtype != 'interpolated':
+            raise ValueError(
+                f"tiptiltx/tiptilty are only applied to wtype='interpolated' "
+                f"beams, but wtype is {wtype!r}; they would be ignored."
+            )
+        self.aisi_file.write("tiptiltx " + " ".join(str(tiptiltx) for _ in range(N)) + " \n")
+        self.aisi_file.write("tiptilty " + " ".join(str(tiptilty) for _ in range(N)) + " \n")
 
     def _make_palindrome(self, base, include_center_twice=False):
         # base = [T1, ..., TL]
