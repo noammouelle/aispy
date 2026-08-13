@@ -4,3 +4,7 @@ tests.ipynb
 examples/output-files/*
 examples/input-files/*
 examples/*.png
+# python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

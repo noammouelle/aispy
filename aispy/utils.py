@@ -48,9 +48,6 @@ class AISFlow():
         self.simulation_params = param_dict['simulation_params']
         self.io_params = param_dict['io_params']
 
-        # this will be set by the pulse writer after we actually build e->g schedules
-        self._paths_from_e2g = None
-
         # open the aisi file
         self.aisi_file = open(workdir+'/'+flowdir+'.aisi', 'w')
 
@@ -121,7 +118,6 @@ class AISFlow():
         f.write(f'ultrafast {s["ultrafast"]}\n')
 
         # --- pathstosimulate ---
-        # Prefer e->g-derived paths if the pulse writer already built them; else fallback to legacy.
         f.write('pathstosimulate ')
         pts = self._build_paths_to_simulate(self.sequence_params["loopnumber"],self.sequence_params["lmt_order"])
         for p in pts:
@@ -170,23 +166,15 @@ class AISFlow():
                 else:
                     raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
                 
-        elif self.sequence_params['sequencename'] == 'RB':
-            if self.sequence_params['automaticdetuning'] == 1:
-                if self.sequence_params['ultranarrow'] == 1:
-                    self._write_auto_stepwise_detuning_ultranarrow_RB()
-                #else:
-                #    self._write_auto_stepwise_detuning()
-            else:
-                if (self.sequence_params['frequencychirp'] != 0) or (self.sequence_params['kchirp'] != 0):
-                    if self.sequence_params['ultranarrow'] == 1:
-                        self._write_chirped_sequence_ultranarrow_RB()
-                    #else:
-                    #    self._write_chirped_sequence()
-                else:
-                    raise ValueError("Only chirped or automatically detuned sequences are supported at the moment")
-        
         else:
-            raise ValueError("Sequence Name unknown")
+            # 'RB' used to be dispatched here to _write_auto_stepwise_detuning_ultranarrow_RB
+            # and _write_chirped_sequence_ultranarrow_RB, neither of which was ever
+            # defined -- so selecting it raised AttributeError rather than anything
+            # informative. Removed in favour of an honest error.
+            raise ValueError(
+                f"Unknown sequencename {self.sequence_params['sequencename']!r}. "
+                f"Only 'MZ' is implemented."
+            )
         
     def _build_paths_to_simulate(self, L, n):
         # the opening and closing sequences are always the same
@@ -224,6 +212,63 @@ class AISFlow():
         upper_path_str = "".join([str(s) for s in upper_path])
 
         return [lower_path_str+"0", lower_path_str+"1", upper_path_str+"0", upper_path_str+"1"]
+
+    def _write_wavefront_params(self, N):
+        """Emit the per-pulse wavefront keys: Zernike coefficients, the sampled
+        beam file, and tip/tilt.
+
+        All three are optional. Zernike coefficients are given as
+        ``pulse_params['zernike_coeffs'] = {noll_index: value}`` and are written
+        for every pulse; a sampled beam is selected with ``wtype = 'interpolated'``
+        and needs ``pulse_params['beam_file']``.
+
+        Note that ais++ applies Zernike aberrations to the *phase* but not to the
+        wavefront gradient, and applies neither to interpolated beams -- see
+        KNOWN_ISSUES.md in the ais++ repository.
+        """
+        wtype = self.pulse_params['wtype']
+
+        # --- Zernike coefficients, uniform across the sequence ---
+        zernike_coeffs = self.pulse_params.get('zernike_coeffs') or {}
+        if zernike_coeffs and wtype == 'interpolated':
+            raise ValueError(
+                "zernike_coeffs cannot be combined with wtype='interpolated': the "
+                "sampled grid is the complete description of the beam, so ais++ "
+                "ignores the coefficients and the result would silently omit them."
+            )
+        for noll_index, value in sorted(zernike_coeffs.items()):
+            self.aisi_file.write(
+                f"zernikecoeff_{noll_index} " + " ".join(str(value) for _ in range(N)) + " \n"
+            )
+
+        # --- sampled beam file ---
+        beam_file = self.pulse_params.get('beam_file')
+        if wtype == 'interpolated':
+            if not beam_file:
+                raise ValueError(
+                    "wtype='interpolated' requires pulse_params['beam_file'], the "
+                    "HDF5 grid written by aisoptics' AISPPExporter."
+                )
+            self.aisi_file.write(
+                "beaminterpolationparamsfilenames " + " ".join(str(beam_file) for _ in range(N)) + " \n"
+            )
+        elif beam_file:
+            raise ValueError(
+                f"pulse_params['beam_file'] is set but wtype is {wtype!r}; the file "
+                f"would be ignored. Set wtype='interpolated' to use it."
+            )
+
+        # --- tip/tilt, degrees ---
+        tiptiltx = self.pulse_params.get('tiptiltx', 0.0)
+        tiptilty = self.pulse_params.get('tiptilty', 0.0)
+        if tiptiltx or tiptilty:
+            if wtype != 'interpolated':
+                raise ValueError(
+                    f"tiptiltx/tiptilty are only applied to wtype='interpolated' "
+                    f"beams, but wtype is {wtype!r}; they would be ignored."
+                )
+            self.aisi_file.write("tiptiltx " + " ".join(str(tiptiltx) for _ in range(N)) + " \n")
+            self.aisi_file.write("tiptilty " + " ".join(str(tiptilty) for _ in range(N)) + " \n")
 
     def _make_palindrome(self, base, include_center_twice=False):
         # base = [T1, ..., TL]
@@ -267,6 +312,21 @@ class AISFlow():
         ndiamonds=L
         L = len(T_base)
         assert L >= 1
+
+        # 'loopnumber' and len('interrogation_time') are two different things and
+        # both drive the geometry: the palindrome length below sets the number of
+        # diamonds actually written, while the sign and e->g schedules further
+        # down are rebuilt from loopnumber directly. If they disagree the pulse
+        # schedule and the path list describe different interferometers, and
+        # nothing complains -- you just get no interference. The palindrome makes
+        # D = 2*len(T_base) for even loopnumber and 2*len(T_base)-1 for odd, so:
+        expected_base = (ndiamonds + 1) // 2
+        assert L == expected_base, (
+            f"loopnumber={ndiamonds} needs len(interrogation_time)={expected_base}, "
+            f"got {L}. The full interrogation list is built as a palindrome, so "
+            f"only the first ceil(loopnumber/2) times are given explicitly."
+        )
+
         if ndiamonds==1:
             T_full = [T_base[0]]        # single diamond
         else:
@@ -276,6 +336,31 @@ class AISFlow():
                 T_full = self._make_palindrome(T_base, include_center_twice=False)
             #T_full = list(T_base) + list(T_base[-2::-1])  # [T1,...,TL-1, TL, TL-1,...,T1]
         D = len(T_full)                  # number of diamonds in the full chain
+        assert D == ndiamonds, (
+            f"internal: built {D} diamonds for loopnumber={ndiamonds}"
+        )
+
+        # The LMT blocks leave an uncorrected vertical arm separation of order
+        # (hbar k/m)*dt_pi*n(n-1)/2. This is a property of the pulse sequence, not
+        # of the frame -- it is identical at Omega = 0 -- and it scales with the
+        # pi-pulse duration. At n = 101 and a 10 kHz Rabi frequency it reaches
+        # 3.3 mm, which is larger than a typical coherence length, so nothing
+        # interferes at all and the run silently returns no fringe. 100 kHz brings
+        # the same case to 0.34 mm. Warn rather than abort: the estimate is an
+        # order-of-magnitude bound and a caller may legitimately be exploring.
+        residual_sep = float(hbar * kz / m) * float(dt_pi) * n * (n - 1) / 2
+        coherence_length = self.simulation_params.get('coherencelength')
+        if coherence_length is not None and residual_sep > float(coherence_length):
+            import warnings
+            warnings.warn(
+                f"LMT residual arm separation ~{residual_sep*1e3:.2f} mm exceeds "
+                f"coherencelength {float(coherence_length)*1e3:.2f} mm at "
+                f"lmt_order={n}, rabi_freq={float(rabi_freq):.3g} rad/s. The arms "
+                f"will not interfere. Shorten the pi pulse (raise rabi_freq) or "
+                f"raise coherencelength.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # ----- compute the effective interrogation times
         for i in range(len(T_full)):
@@ -506,26 +591,7 @@ class AISFlow():
         self.aisi_file.write("beamradius " + " ".join(str(beam_radius) for _ in range(N)) + " \n")
         self.aisi_file.write("baseline " + " ".join(str(baseline) for _ in range(N)) + " \n")
 
-        # Zernike (reuse your 3-block grouping per diamond; here we emit a simple per-pulse up/down split)
-        '''
-        for zidx in zernike_params.keys():
-            c1_up, c2_up, c3_up, c1_dn, c2_dn, c3_dn = zernike_params[zidx]
-            # Map by segment within each diamond; to keep this concise, emit c2_up/dn for all LMT π and c1 for BS/mirror:
-            # (You can elaborate to mirror exactly your block-by-block coefficient layout if needed.)
-            out = []
-            # classify each pulse: BS/mirror vs LMT by duration = dt_bs or dt_pi
-            for i in range(N):
-                dur = end_times[i] - start_times[i]
-                is_bs = abs(dur - dt_bs) < 1e-30
-                is_pi = abs(dur - dt_pi) < 1e-30
-                if is_bs:
-                    out.append(str(c1_up if kz_vals[i] >= 0 else c1_dn))
-                elif is_pi:
-                    out.append(str(c2_up if kz_vals[i] >= 0 else c2_dn))
-                else:
-                    out.append("0")
-            self.aisi_file.write(f"zernikecoeff_{zidx} " + " ".join(out) + "\n")
-        '''
+        self._write_wavefront_params(N)
 
     def _write_chirped_sequence_ultranarrow_MZ(self):
         # get the initial vertical velocity
