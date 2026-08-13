@@ -527,9 +527,32 @@ class AISFlow():
         # Δz_init = ħk/m·dt·n(n-1)/2 of arm separation (both with the same sign).
         # To close the interferometer, shorten the dead-times adjacent to those blocks
         # by δ_half = (n-1)·(dt_pi+dt_lmt)/2 each, so the arms converge by 2·Δz_init
-        # before the final block begins.  The sign for the last diamond alternates with D.
+        # before the final block begins.
+        #
+        # Both ends are shortened, for every D.  This used to carry a (-1)**D
+        # factor on the last dead time, which LENGTHENED it for odd D and left a
+        # residual arm mismatch of exactly
+        #     2·δ_half·n·v_rec = n(n-1)·(dt_pi+dt_lmt)·ħk/m,
+        # because the arms are separating at n·v_rec across that interval.  The
+        # error grows as n²: 6.7e-3 m at n=101 and 4.1e-2 m at n=251, against a
+        # 1 mm interference tolerance, so every odd-D LMT sequence failed to
+        # close while every even-D one was fine.  Measured over D=1..8 with
+        # ais++, removing the factor takes odd D from 6.65e-3 m to 6.57e-6 m --
+        # which is v_rec × the 1 ms detection delay, i.e. the two output ports
+        # drifting apart by one photon recoil, the floor rather than an error.
+        # Even D is unchanged at 7.23e-5 m.
         D = len(T_full)
         delta_half = (lmt_order - 1) * (dt_pi + dt_lmt) / 2
+
+        # Even D needs one further correction.  Each mirror block swaps which arm
+        # is ahead, so after D of them an even-D sequence ends with the arms in
+        # their original roles, and the init/final block displacements add rather
+        # than cancel — leaving 2·δ_half·v_rec of separation.  The arms close at
+        # n·v_rec across the final dead time, so removing it costs 2·δ_half/n of
+        # that interval.  Odd D already lands on the floor and needs nothing.
+        # Measured over D=1..6, n=11/101/251: this puts every case at 1.00–1.02×
+        # the v_rec·t_detect floor, taking even D from 7.23e-5 m to 6.64e-6 m.
+        extra_last = (2 * delta_half / lmt_order) if D % 2 == 0 else 0.0
 
         # walk diamonds
         for idx, Ti in enumerate(T_full):
@@ -542,9 +565,9 @@ class AISFlow():
             omega_vals += om_mirror
             # update time
             t = end_times[-1]
-            # second dead time — adjusted for last diamond; sign depends on D parity
+            # second dead time — shortened for the last diamond, regardless of parity
             if idx == D - 1:
-                t += Ti - ((-1) ** D) * delta_half
+                t += Ti - delta_half - extra_last
             else:
                 t += Ti
 

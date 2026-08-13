@@ -194,6 +194,151 @@ class TestLMTResidualSeparation:
 
 
 # --------------------------------------------------------------------------
+# LMT position closure
+# --------------------------------------------------------------------------
+
+class TestLMTPositionClosure:
+    """The init and final LMT acceleration blocks each accumulate
+    Δz = (hbar k/m)·dt·n(n-1)/2 of arm separation in the same direction. The
+    builder cancels this by shortening the dead time at each end by
+    δ_half = (n-1)(dt_pi+dt_lmt)/2.
+
+    That correction previously carried a (-1)**D factor on the last dead time,
+    which LENGTHENED it for odd D instead of shortening it, leaving a residual
+    of 2·δ_half·n·v_rec — 6.7 mm at n=101 and 41 mm at n=251, against a ~1 mm
+    interference tolerance. Every odd-loop LMT sequence failed to close; even
+    loop counts were fine, which is exactly the kind of asymmetry that hides.
+
+    These tests read the correction back out of the generated schedule, so the
+    sign cannot silently flip again.
+    """
+
+    @staticmethod
+    def _dead_times(arrays):
+        """Gaps between consecutive pulses, from the generated schedule."""
+        t0 = [float(v) for v in arrays['t0']]
+        t1 = [float(v) for v in arrays['t1']]
+        return [t0[i + 1] - t1[i] for i in range(len(t0) - 1)]
+
+    @staticmethod
+    def _interrogation_gaps(arrays):
+        """The interrogation dead times only; the LMT blocks contribute
+        dt_lmt-sized gaps that would swamp the comparison.
+
+        Structure of the result, which the tests below rely on: no pulse sits
+        between the second dead time of one diamond and the first of the next,
+        so those two MERGE into a single gap of ~2*T_eff. The list is therefore
+
+            [T_eff - delta_half,  2*T_eff, ..., 2*T_eff,  T_eff - delta_half - extra_last]
+
+        i.e. the first and last entries are single, corrected dead times and the
+        middles are uncorrected pairs. The cutoff must sit below the single-gap
+        size, not half the merged size, or the boundaries are silently dropped.
+        """
+        gaps = TestLMTPositionClosure._dead_times(arrays)
+        cutoff = 0.25 * max(gaps)
+        return [g for g in gaps if g > cutoff]
+
+    @staticmethod
+    def _delta_half(params, n):
+        rabi = params['pulse_params']['rabi_freq']
+        dt_pi = float(pi / rabi)
+        return (n - 1) * (dt_pi + params['sequence_params']['dt_lmt']) / 2
+
+    @pytest.mark.parametrize('loopnumber', [1, 3, 5])
+    def test_odd_D_boundary_gaps_are_equal(self, loopnumber):
+        """For odd D the first and last interrogation dead times must be equal:
+        both are shortened by delta_half and extra_last is zero.
+
+        This is the direct signature of the bug. With the (-1)**D factor the
+        last gap was LENGTHENED by delta_half while the first was shortened, so
+        the two differed by exactly 2*delta_half.
+        """
+        n = 11
+        params = base_params(loopnumber=loopnumber, lmt_order=n,
+                             interrogation_time=[0.05] * ((loopnumber + 1) // 2))
+        gaps = self._interrogation_gaps(parse_arrays(write_sequence(params)))
+        delta_half = self._delta_half(params, n)
+
+        assert gaps[0] == pytest.approx(gaps[-1], abs=1e-9), (
+            f"D={loopnumber}: first gap {gaps[0]:.9g} != last gap {gaps[-1]:.9g}; "
+            f"they differ by {abs(gaps[0]-gaps[-1]):.6g} s and 2*delta_half is "
+            f"{2*delta_half:.6g} s -- this is the (-1)**D sign bug"
+        )
+
+    @pytest.mark.parametrize('loopnumber', [3, 4, 5, 6])
+    def test_boundary_gaps_are_shorter_than_middle_gaps(self, loopnumber):
+        """Only the first and last interrogation dead times carry the
+        correction, so they must be delta_half shorter than the middle ones.
+        Compared within a single schedule, so the separate reduction of
+        interrogation_time by the LMT block duration cancels out."""
+        n = 11
+        params = base_params(loopnumber=loopnumber, lmt_order=n,
+                             interrogation_time=[0.05] * ((loopnumber + 1) // 2))
+        gaps = self._interrogation_gaps(parse_arrays(write_sequence(params)))
+        delta_half = self._delta_half(params, n)
+
+        middles = gaps[1:-1]
+        assert middles, "expected uncorrected middle dead times for D >= 3"
+        # middles are merged pairs, so halve them to get one uncorrected dead time
+        uncorrected = max(middles) / 2.0
+
+        assert uncorrected - gaps[0] == pytest.approx(delta_half, rel=0.02), (
+            f"D={loopnumber}: first gap is {uncorrected - gaps[0]:.6g} s shorter "
+            f"than an uncorrected dead time, expected delta_half = {delta_half:.6g} s"
+        )
+        # the last gap carries delta_half plus, for even D, extra_last
+        assert uncorrected - gaps[-1] >= delta_half * 0.98, (
+            f"D={loopnumber}: last gap was not shortened by at least delta_half"
+        )
+
+    @pytest.mark.parametrize('n', [11, 101, 251])
+    def test_correction_scales_with_lmt_order(self, n):
+        """delta_half grows as (n-1), so the shortening must too. The old bug's
+        residual grew as n^2, which is why it stayed invisible at low n."""
+        params = base_params(loopnumber=3, lmt_order=n,
+                             interrogation_time=[0.3, 0.3])
+        gaps = self._interrogation_gaps(parse_arrays(write_sequence(params)))
+        delta_half = self._delta_half(params, n)
+
+        shortening = max(gaps[1:-1]) / 2.0 - gaps[0]
+        assert shortening == pytest.approx(delta_half, rel=0.02), (
+            f"n={n}: shortening {shortening:.6g} != delta_half {delta_half:.6g}"
+        )
+
+    @pytest.mark.parametrize('loopnumber', [2, 4, 6])
+    def test_even_D_gets_the_extra_correction(self, loopnumber):
+        """Even D needs a further 2*delta_half/n on the last dead time, because
+        the init and final block displacements add rather than cancel. Odd D
+        must NOT get it."""
+        n = 11
+        params = base_params(loopnumber=loopnumber, lmt_order=n,
+                             interrogation_time=[0.05] * ((loopnumber + 1) // 2))
+        gaps = self._interrogation_gaps(parse_arrays(write_sequence(params)))
+        delta_half = self._delta_half(params, n)
+        extra_last = 2 * delta_half / n
+
+        assert gaps[0] - gaps[-1] == pytest.approx(extra_last, rel=0.02), (
+            f"D={loopnumber}: last gap is {gaps[0]-gaps[-1]:.6g} s shorter than "
+            f"the first, expected extra_last = {extra_last:.6g} s"
+        )
+
+    def test_schedule_stays_monotonic_at_high_lmt(self):
+        """The correction subtracts from dead times, so at large n it must not
+        drive a dead time negative and reorder the schedule."""
+        params = base_params(loopnumber=4, lmt_order=101,
+                             interrogation_time=[0.2, 0.2])
+        arrays = parse_arrays(write_sequence(params))
+        t0 = [float(v) for v in arrays['t0']]
+        t1 = [float(v) for v in arrays['t1']]
+        for i in range(len(t0) - 1):
+            assert t0[i + 1] >= t1[i] - 1e-18, (
+                f"pulse {i+1} starts before pulse {i} ends: the closure "
+                f"correction over-subtracted"
+            )
+
+
+# --------------------------------------------------------------------------
 # schedule well-formedness
 # --------------------------------------------------------------------------
 
