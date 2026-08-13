@@ -213,7 +213,7 @@ class AISFlow():
 
         return [lower_path_str+"0", lower_path_str+"1", upper_path_str+"0", upper_path_str+"1"]
 
-    def _write_wavefront_params(self, N):
+    def _write_wavefront_params(self, N, kz_vals=None):
         """Emit the per-pulse wavefront keys: Zernike coefficients, the sampled
         beam file, and tip/tilt.
 
@@ -221,6 +221,14 @@ class AISFlow():
         ``pulse_params['zernike_coeffs'] = {noll_index: value}`` and are written
         for every pulse; a sampled beam is selected with ``wtype = 'interpolated'``
         and needs ``pulse_params['beam_file']``.
+
+        ``beam_file`` may be a single path (used for every pulse regardless of
+        propagation direction) or a ``(up_file, down_file)`` pair, split by the
+        sign of ``kz_vals`` the same way ``zlaser``/mirror-reflection direction
+        already is elsewhere in this class -- e.g. a perfect downward beam that
+        picks up a mirror aberration on reflection, so the upward beam alone
+        needs the sampled/aberrated file. A pair requires ``kz_vals`` (one
+        entry per pulse) to select from it.
 
         Note that ais++ applies Zernike aberrations to the *phase* but not to the
         wavefront gradient, and applies neither to interpolated beams -- see
@@ -251,16 +259,25 @@ class AISFlow():
         if wtype == 'interpolated' and not beam_file:
             raise ValueError(
                 "wtype='interpolated' requires pulse_params['beam_file'], the "
-                "HDF5 grid written by aisoptics' AISPPExporter."
+                "HDF5 grid written by aisoptics' AISPPExporter (a single path, "
+                "or an (up_file, down_file) pair)."
             )
         if wtype != 'interpolated' and beam_file:
             raise ValueError(
                 f"pulse_params['beam_file'] is set but wtype is {wtype!r}; the file "
                 f"would be ignored. Set wtype='interpolated' to use it."
             )
-        self.aisi_file.write(
-            "beaminterpolationparamsfilenames " + " ".join(str(beam_file or '') for _ in range(N)) + " \n"
-        )
+        if isinstance(beam_file, (tuple, list)):
+            up_file, down_file = beam_file
+            if kz_vals is None or len(kz_vals) != N:
+                raise ValueError(
+                    "an (up_file, down_file) beam_file pair needs kz_vals (one "
+                    "entry per pulse) to select the propagation direction."
+                )
+            files_per_pulse = [str(up_file) if kz_vals[i] >= 0 else str(down_file) for i in range(N)]
+        else:
+            files_per_pulse = [str(beam_file or '')] * N
+        self.aisi_file.write("beaminterpolationparamsfilenames " + " ".join(files_per_pulse) + " \n")
 
         # --- tip/tilt, degrees ---
         # ais++'s parser (AISDataIO.cc DoubleArrayParamsKeys) requires
@@ -622,7 +639,7 @@ class AISFlow():
         self.aisi_file.write("beamradius " + " ".join(str(beam_radius) for _ in range(N)) + " \n")
         self.aisi_file.write("baseline " + " ".join(str(baseline) for _ in range(N)) + " \n")
 
-        self._write_wavefront_params(N)
+        self._write_wavefront_params(N, kz_vals)
 
     def _write_chirped_sequence_ultranarrow_MZ(self):
         # get the initial vertical velocity
