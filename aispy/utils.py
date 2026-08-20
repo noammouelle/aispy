@@ -365,27 +365,32 @@ class AISFlow():
             f"internal: built {D} diamonds for loopnumber={ndiamonds}"
         )
 
-        # The LMT blocks leave an uncorrected vertical arm separation of order
-        # (hbar k/m)*dt_pi*n(n-1)/2. This is a property of the pulse sequence, not
-        # of the frame -- it is identical at Omega = 0 -- and it scales with the
-        # pi-pulse duration. At n = 101 and a 10 kHz Rabi frequency it reaches
-        # 3.3 mm, which is larger than a typical coherence length, so nothing
-        # interferes at all and the run silently returns no fringe. 100 kHz brings
-        # the same case to 0.34 mm. Warn rather than abort: the estimate is an
-        # order-of-magnitude bound and a caller may legitimately be exploring.
-        residual_sep = float(hbar * kz / m) * float(dt_pi) * n * (n - 1) / 2
-        coherence_length = self.simulation_params.get('coherencelength')
-        if coherence_length is not None and residual_sep > float(coherence_length):
-            import warnings
-            warnings.warn(
-                f"LMT residual arm separation ~{residual_sep*1e3:.2f} mm exceeds "
-                f"coherencelength {float(coherence_length)*1e3:.2f} mm at "
-                f"lmt_order={n}, rabi_freq={float(rabi_freq):.3g} rad/s. The arms "
-                f"will not interfere. Shorten the pi pulse (raise rabi_freq) or "
-                f"raise coherencelength.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+        # There used to be a warning here that the LMT blocks leave an
+        # uncorrected vertical arm separation of (hbar k/m)*dt_pi*n(n-1)/2 --
+        # 3.3 mm at n = 101 and 10 kHz, 1.6 m at n = 1001 and 1 kHz -- and that
+        # the arms would therefore not interfere. It was wrong, and it is
+        # removed.
+        #
+        # The drift is real while the ladder is firing, but this function has
+        # already compensated it: the closure carve-outs of delta = (n-1)*u/2
+        # taken out of the outer dead times below are of exactly that form and
+        # magnitude. The formula measured the uncompensated drift and compared
+        # it against the coherence length, ignoring the correction made a few
+        # lines further down.
+        #
+        # Measured against ais++ rather than argued. ais++ does enforce
+        # coherencelength: at n = 1001 with 500 us pulses it interferes at
+        # coherencelength = 1e-8 m and stops at 1e-9 m, so the true separation
+        # at recombination is ~1.5 nm, nine orders of magnitude below what the
+        # formula claimed. Runs at n = 101, 501 and 1001 interfere on every
+        # record, with the phase spread growing 0.38 -> 1.37 -> 1.73 rad as it
+        # should. The warning's own motivating case -- n = 101, 10 kHz,
+        # coherencelength = 1e-4 -- interferes fully, and still does at
+        # coherencelength = 1e-6, 1660x below the separation it predicted.
+        #
+        # If a closure check is wanted here, it has to be computed from the
+        # written pulse times and k vectors rather than from n and dt_pi; see
+        # the arm-gap calculation in aispy.trajectory.
 
         # ----- compute the effective interrogation times
         for i in range(len(T_full)):

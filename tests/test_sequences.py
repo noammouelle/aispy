@@ -145,52 +145,38 @@ class TestLoopCountConsistency:
 # LMT residual separation vs coherence length
 # --------------------------------------------------------------------------
 
-class TestLMTResidualSeparation:
-    """The LMT blocks leave a residual vertical arm separation of order
-    (hbar k/m) * dt_pi * n(n-1)/2. At n=101 and a 10 kHz Rabi frequency that is
-    3.3 mm -- larger than a typical coherence length, so nothing interferes and
-    the run silently returns no fringe."""
+class TestNoFalseLMTSeparationWarning:
+    """The LMT ladder drift is compensated, and must not be warned about.
 
-    def test_warns_when_separation_exceeds_coherence_length(self):
-        # n = 101 at 10 kHz: the case from the coriolis commit message
+    A warning used to fire here claiming that the blocks leave a residual arm
+    separation of (hbar k/m)*dt_pi*n(n-1)/2 and that the arms would not
+    interfere.  That formula measures the drift as if nothing corrected it,
+    while ``_write_ultranarrow_MZ_Lloops`` has already corrected it with the
+    delta = (n-1)*u/2 carve-outs on the outer dead times.
+
+    Checked against ais++, which does enforce ``coherencelength``: at n = 1001
+    with 500 us pulses it interferes at 1e-8 m and stops at 1e-9 m, so the real
+    separation is ~1.5 nm rather than the 1.6 m the formula predicted.  The
+    cases below are the ones the old guard warned about; every one of them
+    interferes on every record in ais++.
+    """
+
+    @pytest.mark.parametrize('lmt_order, rabi_hz, coherencelength', [
+        (101, 1e4, 1e-4),      # the old guard's own motivating case
+        (51, 1e4, 3e-4),
+        (1001, 1e3, 1.0),      # 500 us pulses, where it claimed 1.6 m
+    ])
+    def test_no_warning_for_sequences_that_do_interfere(
+            self, lmt_order, rabi_hz, coherencelength):
         params = base_params(
-            loopnumber=1, lmt_order=101,
-            rabi_freq=2 * 3.141592653589793 * 1e4,
-            coherencelength=1e-4,          # 0.1 mm, below the ~3.3 mm residual
-            interrogation_time=[0.05],
+            loopnumber=1, lmt_order=lmt_order,
+            rabi_freq=2 * 3.141592653589793 * rabi_hz,
+            coherencelength=coherencelength,
+            interrogation_time=[0.05 if lmt_order < 1001 else 2.225],
         )
-        with pytest.warns(RuntimeWarning, match='will not interfere'):
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
             write_sequence(params)
-
-    def test_silent_when_pulse_is_short_enough(self):
-        # same sequence at 100 kHz brings the residual to ~0.34 mm
-        params = base_params(
-            loopnumber=1, lmt_order=101,
-            rabi_freq=2 * 3.141592653589793 * 1e5,
-            coherencelength=1e-2,          # 10 mm
-            interrogation_time=[0.05],
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter('error', RuntimeWarning)
-            write_sequence(params)         # must not raise
-
-    def test_scales_with_pulse_duration(self):
-        """Residual separation scales with dt_pi, i.e. inversely with rabi_freq.
-        Halving the pulse duration must move a warning case to a silent one."""
-        slow = base_params(loopnumber=1, lmt_order=51,
-                           rabi_freq=2 * 3.141592653589793 * 1e4,
-                           coherencelength=3e-4,
-                           interrogation_time=[0.05])
-        with pytest.warns(RuntimeWarning):
-            write_sequence(slow)
-
-        fast = base_params(loopnumber=1, lmt_order=51,
-                           rabi_freq=2 * 3.141592653589793 * 1e6,
-                           coherencelength=3e-4,
-                           interrogation_time=[0.05])
-        with warnings.catch_warnings():
-            warnings.simplefilter('error', RuntimeWarning)
-            write_sequence(fast)
 
 
 # --------------------------------------------------------------------------
