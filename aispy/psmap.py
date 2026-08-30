@@ -99,6 +99,56 @@ def _port_prob(amp0, amp1, dphi, is_interfering, delta=0.0):
 
 # ── GPU interpolation on a regular grid ──────────────────────────────────────
 
+_CATMULL_KERNEL_SRC = r'''
+extern "C" __global__
+void catmull_rom_4d(
+    const double* __restrict__ grid,
+    const int*    __restrict__ ix,  const int*    __restrict__ iy,
+    const int*    __restrict__ ivx, const int*    __restrict__ ivy,
+    const double* __restrict__ tx,  const double* __restrict__ ty,
+    const double* __restrict__ tvx, const double* __restrict__ tvy,
+    double* __restrict__ out,
+    int N, int nx, int ny, int nvx, int nvy)
+{
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if (tid >= N) return;
+    double t_x=tx[tid], t_y=ty[tid], t_vx=tvx[tid], t_vy=tvy[tid];
+    int i_x=ix[tid], i_y=iy[tid], i_vx=ivx[tid], i_vy=ivy[tid];
+    double t2, t3;
+    double wx[4], wy[4], wvx[4], wvy[4];
+    #define CR(t, w) \
+        t2=t*t; t3=t2*t; \
+        w[0]=-0.5*t+t2-0.5*t3;     \
+        w[1]=1.0-2.5*t2+1.5*t3;    \
+        w[2]=0.5*t+2.0*t2-1.5*t3;  \
+        w[3]=-0.5*t2+0.5*t3;
+    CR(t_x, wx); CR(t_y, wy); CR(t_vx, wvx); CR(t_vy, wvy);
+    #undef CR
+    double result = 0.0;
+    for (int bx = 0; bx < 4; bx++) {
+        int jx = i_x+bx-1; jx = jx<0 ? 0 : (jx>=nx ? nx-1 : jx);
+        for (int by = 0; by < 4; by++) {
+            int jy = i_y+by-1; jy = jy<0 ? 0 : (jy>=ny ? ny-1 : jy);
+            for (int bvx = 0; bvx < 4; bvx++) {
+                int jvx = i_vx+bvx-1; jvx = jvx<0 ? 0 : (jvx>=nvx ? nvx-1 : jvx);
+                double w3 = wx[bx]*wy[by]*wvx[bvx];
+                for (int bvy = 0; bvy < 4; bvy++) {
+                    int jvy = i_vy+bvy-1;
+                    jvy = jvy<0 ? 0 : (jvy>=nvy ? nvy-1 : jvy);
+                    result += w3*wvy[bvy]
+                        * grid[((jx*ny+jy)*nvx+jvx)*nvy+jvy];
+                }
+            }
+        }
+    }
+    out[tid] = result;
+}
+'''
+
+if _CUPY_AVAILABLE:
+    _catmull_kernel = cp.RawKernel(_CATMULL_KERNEL_SRC, 'catmull_rom_4d')
+
+
 def _find_cell(arr, lo, dx, n):
     """
     For a uniform grid with spacing *dx* starting at *lo*, return the
@@ -124,27 +174,6 @@ def _catmull_weights(t, xp=np):
          0.5*t  + 2.0 *t2 - 1.5*t3,
                 - 0.5 *t2 + 0.5*t3,
     ]
-
-
-def _quadrilinear(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy):
-    """
-    Quadrilinear interpolation on a 4D grid (x, y, vx, vy) using
-    pre-computed cell indices and fractional offsets.  16-corner sum.
-    All arrays may be cupy or numpy.
-    """
-    result = None
-    for bx in range(2):
-        wx = tx if bx else (1.0 - tx)
-        for by in range(2):
-            wy = ty if by else (1.0 - ty)
-            for bvx in range(2):
-                wvx = tvx if bvx else (1.0 - tvx)
-                for bvy in range(2):
-                    wvy = tvy if bvy else (1.0 - tvy)
-                    corner = grid[ix+bx, iy+by, ivx+bvx, ivy+bvy]
-                    term   = wx * wy * wvx * wvy * corner
-                    result = term if result is None else result + term
-    return result
 
 
 def _quarticubic(grid, ix, iy, ivx, ivy, tx, ty, tvx, tvy, nx, ny, nvx, nvy):
@@ -345,7 +374,7 @@ class PSMAPSurrogate:
     # ── Evaluation ───────────────────────────────────────────────────────────
 
     def _eval_gpu(self, x0_g, y0_g, vx0_g, vy0_g):
-        """Catmull-Rom cubic interpolation on GPU."""
+        """Catmull-Rom cubic interpolation on GPU (fused CUDA kernel)."""
         ix,  tx  = _find_cell(x0_g,  self._x_lo,  self._dx,  self.nx)
         iy,  ty  = _find_cell(y0_g,  self._y_lo,  self._dy,  self.ny)
         ivx, tvx = _find_cell(vx0_g, self._vx_lo, self._dvx, self.nvx)
@@ -356,16 +385,24 @@ class PSMAPSurrogate:
         amp0_out = cp.empty((N, self.nP), dtype=cp.float64)
         amp1_out = cp.empty((N, self.nP), dtype=cp.float64)
 
-        dims = (self.nx, self.ny, self.nvx, self.nvy)
-        for pi in range(self.nP):
-            dphi_out[:, pi] = _quarticubic(
-                self._gpu_dphi[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
-            amp0_out[:, pi] = _quarticubic(
-                self._gpu_amp0[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
-            amp1_out[:, pi] = _quarticubic(
-                self._gpu_amp1[pi], ix, iy, ivx, ivy, tx, ty, tvx, tvy, *dims)
+        block = 256
+        grid_sz = (N + block - 1) // block
+        dims = (np.int32(N), np.int32(self.nx), np.int32(self.ny),
+                np.int32(self.nvx), np.int32(self.nvy))
 
-        # Zero amplitudes outside the grid — dphi extrapolation is irrelevant there.
+        for pi in range(self.nP):
+            tmp = cp.empty(N, dtype=cp.float64)
+            for grid_arr, out_arr in [
+                (self._gpu_dphi[pi], dphi_out),
+                (self._gpu_amp0[pi], amp0_out),
+                (self._gpu_amp1[pi], amp1_out),
+            ]:
+                _catmull_kernel(
+                    (grid_sz,), (block,),
+                    (grid_arr, ix, iy, ivx, ivy,
+                     tx, ty, tvx, tvy, tmp, *dims))
+                out_arr[:, pi] = tmp
+
         out_mask = (
             (x0_g  < self.xs[0])  | (x0_g  > self.xs[-1])  |
             (y0_g  < self.ys[0])  | (y0_g  > self.ys[-1])  |
@@ -381,7 +418,7 @@ class PSMAPSurrogate:
         """
         Evaluate the surrogate at arbitrary (x0, y0, vx0, vy0) coordinates.
 
-        Uses GPU quadrilinear interpolation when ``use_gpu=True``, scipy on
+        Uses GPU Catmull-Rom cubic interpolation when ``use_gpu=True``, scipy on
         CPU otherwise.  Always returns **numpy** arrays.
 
         Parameters
@@ -443,7 +480,7 @@ class PSMAPSurrogate:
         GPU image path (use_gpu=True and _image_edges is not None)  ← fastest
         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         1. GPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
-        2. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
+        2. GPU  — Catmull-Rom cubic interpolation of dphi, amp0, amp1.
         3. GPU  — port probabilities; detection + state Bernoulli draws.
         4. GPU  — 2D histogram into (res × res) bins using _image_edges.
         5. CPU  — device→host for two (res, res) uint16 images only.
@@ -455,7 +492,7 @@ class PSMAPSurrogate:
         GPU array path (use_gpu=True and _return_arrays=True)
         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         1. GPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
-        2. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
+        2. GPU  — Catmull-Rom cubic interpolation of dphi, amp0, amp1.
         3. GPU  — port probabilities; detection + state Bernoulli draws.
         4. CPU  — device→host for detected atoms only (state, xf, yf).
 
@@ -464,7 +501,7 @@ class PSMAPSurrogate:
         1. CPU  — sample (x0, y0, vx0, vy0); free-flight to (xf, yf).
         2. CPU  — evaluate phase_profile(xf, yf, vxf, vyf) if provided.
         3. GPU  — host→device transfer.
-        4. GPU  — quadrilinear interpolation of dphi, amp0, amp1.
+        4. GPU  — Catmull-Rom cubic interpolation of dphi, amp0, amp1.
         5. GPU  — port probabilities; detection + state Bernoulli draws.
         6. CPU  — device→host; filter to detected atoms only.
 
@@ -591,7 +628,7 @@ class PSMAPSurrogate:
             vy0_g = cp.asarray(vy0,      dtype=cp.float64)
             delta_g = cp.asarray(delta_np, dtype=cp.float64)
 
-            # ── 4. GPU quadrilinear interpolation ─────────────────────────────
+            # ── 4. GPU Catmull-Rom cubic interpolation ─────────────────────────────
             dphi_g, amp0_g, amp1_g = self._eval_gpu(x0_g, y0_g, vx0_g, vy0_g)
 
             # ── 5. Port probabilities ─────────────────────────────────────────
